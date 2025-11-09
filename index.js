@@ -2,8 +2,11 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
+const http = require("http");
+const { initializeWebSocket } = require("./websocket");
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 
 // Trust reverse proxies (for services like Railway, Render, etc.)
@@ -20,6 +23,9 @@ app.use(
     credentials: true,
   })
 );
+
+// Initialize WebSocket server
+initializeWebSocket(server, allowedOrigins);
 
 // Body parsers (for handling large JSON payloads)
 app.use(express.json({ limit: "10mb" }));
@@ -38,9 +44,23 @@ app.get("/health", (_req, res) => {
 // Routes
 const userRoutes = require("./routes/user.routes");
 const postRoutes = require("./routes/post.routes");
+const messageRoutes = require("./routes/message.routes");
+const eventRoutes = require("./routes/event.routes");
+const hangoutRoutes = require("./routes/hangout.routes");
+const communityRoutes = require("./routes/community.routes");
+const notificationRoutes = require("./routes/notification.routes");
+const quickMessageRoutes = require("./routes/quickMessage.routes");
+const authRoutes = require("./routes/auth.routes");
 
+app.use("/auth", authRoutes);
 app.use("/users", userRoutes);
 app.use("/posts", postRoutes);
+app.use("/messages", messageRoutes);
+app.use("/events", eventRoutes);
+app.use("/hangouts", hangoutRoutes);
+app.use("/communities", communityRoutes);
+app.use("/notifications", notificationRoutes);
+app.use("/quick-messages", quickMessageRoutes);
 
 // Root route
 app.get("/", (_req, res) => {
@@ -59,6 +79,8 @@ app.use((err, _req, res, _next) => {
 });
 
 // Start the server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
+  console.log(`📡 WebSocket server ready`);
 });
+

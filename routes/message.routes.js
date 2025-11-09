@@ -315,15 +315,17 @@ router.get("/conversations/:id/messages", async (req, res) => {
 });
 
 /**
- * Send a text message
+ * Send a text message (with optional image)
  * POST /messages/conversations/:id/messages
- * Body: { sender_username, content, reply_to_message_id? }
+ * FormData: { sender_username, content, reply_to_message_id?, image? (file) }
+ * OR JSON: { sender_username, content, reply_to_message_id? }
  */
-router.post("/conversations/:id/messages", async (req, res) => {
+router.post("/conversations/:id/messages", upload.single("image"), async (req, res) => {
   const conversationId = Number(req.params.id);
   const { sender_username, content, reply_to_message_id = null } = req.body;
+  const imageFile = req.file;
 
-  if (!sender_username || (!content && !reply_to_message_id)) {
+  if (!sender_username || (!content && !reply_to_message_id && !imageFile)) {
     return res.status(400).json({ message: "Missing sender or content." });
   }
 
@@ -331,14 +333,18 @@ router.post("/conversations/:id/messages", async (req, res) => {
     if (!(await isMember(conversationId, sender_username)))
       return res.status(403).json({ message: "Not a member of this conversation." });
 
-    const { data, error } = await supabase
+    // Determine message type based on whether there's an image
+    const messageType = imageFile ? "image" : "text";
+
+    // Create message
+    const { data: message, error } = await supabase
       .from("messages")
       .insert([
         {
           conversation_id: conversationId,
           sender_username,
-          message_type: "text",
-          content,
+          message_type: messageType,
+          content: content || null,
           reply_to_message_id,
         },
       ])
@@ -348,9 +354,40 @@ router.post("/conversations/:id/messages", async (req, res) => {
       .single();
     if (error) throw error;
 
-    res.status(201).json(data);
+    // If there's an image, upload it and attach to message
+    let messageMedia = null;
+    if (imageFile) {
+      const clean = imageFile.originalname.replace(/[^\w.\-]+/g, "_");
+      const storagePath = `conversations/${conversationId}/${message.id}/${Date.now()}_${clean}`;
+
+      const up = await supabase.storage
+        .from(MSG_BUCKET)
+        .upload(storagePath, imageFile.buffer, { contentType: imageFile.mimetype, upsert: true });
+      if (up.error) throw up.error;
+
+      const { data: pub } = supabase.storage.from(MSG_BUCKET).getPublicUrl(storagePath);
+      const media_url = pub.publicUrl;
+
+      const media_type = imageFile.mimetype.startsWith("video")
+        ? "video"
+        : imageFile.mimetype.startsWith("audio")
+        ? "audio"
+        : "image";
+
+      const ins = await supabase
+        .from("message_media")
+        .insert([{ message_id: message.id, media_url, media_type, position: 0 }])
+        .select("id, message_id, media_url, media_type, position, created_at")
+        .single();
+      if (ins.error) throw ins.error;
+
+      messageMedia = [ins.data];
+    }
+
+    const result = messageMedia ? { ...message, message_media: messageMedia } : message;
+    res.status(201).json(result);
   } catch (err) {
-    console.error("send text message error:", err);
+    console.error("send message error:", err);
     res.status(500).json({ message: "Server error while sending message." });
   }
 });

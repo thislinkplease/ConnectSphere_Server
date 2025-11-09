@@ -1,0 +1,348 @@
+{
+  "info": {
+    "name": "ConnectSphere API",
+    "description": "API collection for ConnectSphere backend server",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "testUsername",
+      "value": "johndoe",
+      "type": "string"
+    },
+    {
+      "key": "testUserId",
+      "value": "test-uuid-1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Create Profile",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{testUserId}}\",\n  \"email\": \"john@example.com\",\n  \"username\": \"{{testUsername}}\",\n  \"name\": \"John Doe\",\n  \"gender\": \"Male\",\n  \"bio\": \"Love traveling\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/users/create-profile"}
+          }
+        },
+        {
+          "name": "Get User by Username",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/users/username/{{testUsername}}"}
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"John Doe Updated\",\n  \"status\": \"Traveling\",\n  \"country\": \"Vietnam\",\n  \"city\": \"Ho Chi Minh\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/users/{{testUserId}}"}
+          }
+        },
+        {
+          "name": "Search Users",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/users/search?q=john"}
+          }
+        },
+        {
+          "name": "Get Profile Completion",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/users/{{testUsername}}/profile-completion"}
+          }
+        },
+        {
+          "name": "Add Language",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"language\": \"English\",\n  \"proficiency\": \"Fluent\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/users/{{testUsername}}/languages"}
+          }
+        },
+        {
+          "name": "Get Languages",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/users/{{testUsername}}/languages"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Events",
+      "item": [
+        {
+          "name": "Create Event",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"hosted_by\": \"{{testUsername}}\",\n  \"name\": \"Garden by Bottega 5\",\n  \"description\": \"Weekly Friday night event\",\n  \"address\": \"123 Main St, District 1\",\n  \"date_start\": \"2025-11-07T19:30:00Z\",\n  \"date_end\": \"2025-11-07T23:30:00Z\",\n  \"latitude\": 10.7769,\n  \"longitude\": 106.7009,\n  \"entrance_fee\": \"Free\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/events"}
+          }
+        },
+        {
+          "name": "Get Events",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/events?status=upcoming&limit=20"}
+          }
+        },
+        {
+          "name": "Get Event Details",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/events/1?viewer={{testUsername}}"}
+          }
+        },
+        {
+          "name": "Join Event",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"status\": \"going\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/events/1/participate"}
+          }
+        },
+        {
+          "name": "Get Event Participants",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/events/1/participants"}
+          }
+        },
+        {
+          "name": "Add Event Comment",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"author_username\": \"{{testUsername}}\",\n  \"content\": \"Looking forward to this!\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/events/1/comments"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Hangouts",
+      "item": [
+        {
+          "name": "Update Hangout Status",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"is_available\": true,\n  \"current_activity\": \"grab beers\",\n  \"activities\": [\"grab beers\", \"bar hopping\"]\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/hangouts/status"}
+          }
+        },
+        {
+          "name": "Get Hangout Status",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/hangouts/status/{{testUsername}}"}
+          }
+        },
+        {
+          "name": "Create Hangout",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"creator_username\": \"{{testUsername}}\",\n  \"title\": \"Beers in District 1\",\n  \"activities\": [\"grab beers\"],\n  \"languages\": [\"English\", \"Vietnamese\"],\n  \"latitude\": 10.7769,\n  \"longitude\": 106.7009,\n  \"max_distance_km\": 5\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/hangouts"}
+          }
+        },
+        {
+          "name": "Get Open Hangouts",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/hangouts?languages=English&distance_km=10"}
+          }
+        },
+        {
+          "name": "Join Hangout",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/hangouts/1/join"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Communities",
+      "item": [
+        {
+          "name": "Create Community",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"created_by\": \"{{testUsername}}\",\n  \"name\": \"Language Exchange HCMC\",\n  \"description\": \"Practice languages with native speakers\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/communities"}
+          }
+        },
+        {
+          "name": "Get Suggested Communities",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/communities/suggested?limit=10"}
+          }
+        },
+        {
+          "name": "Search Communities",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/communities?q=language"}
+          }
+        },
+        {
+          "name": "Join Community",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/communities/1/join"}
+          }
+        },
+        {
+          "name": "Create Community Post",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"author_username\": \"{{testUsername}}\",\n  \"content\": \"What's everyone learning this week?\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/communities/1/posts"}
+          }
+        },
+        {
+          "name": "Like Community Post",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/communities/1/posts/1/like"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "Get Notifications",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/notifications?username={{testUsername}}&limit=50"}
+          }
+        },
+        {
+          "name": "Get Unread Count",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/notifications/unread-count?username={{testUsername}}"}
+          }
+        },
+        {
+          "name": "Mark as Read",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"all\": true\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/notifications/mark-read"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Quick Messages",
+      "item": [
+        {
+          "name": "Get Quick Messages",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/quick-messages?username={{testUsername}}"}
+          }
+        },
+        {
+          "name": "Create Quick Message",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"shortcut\": \"/x\",\n  \"message\": \"Xin chào\"\n}"
+            },
+            "url": {"raw": "{{baseUrl}}/quick-messages"}
+          }
+        },
+        {
+          "name": "Expand Shortcut",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "{{baseUrl}}/quick-messages/expand?username={{testUsername}}&shortcut=/x"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "url": {"raw": "{{baseUrl}}/health"}
+      }
+    }
+  ]
+}

@@ -67,6 +67,39 @@ async function getUserByUsername(username) {
 /* ----------------------------- Profile Endpoints ----------------------------- */
 
 /**
+ * Get current user (requires authentication via token/header)
+ * GET /users/me
+ * For now, we'll use a simple auth header: Authorization: Bearer <token>
+ * Token format: base64(userId:timestamp)
+ */
+router.get("/me", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Missing or invalid authorization header." });
+    }
+
+    const token = authHeader.substring(7); // Remove "Bearer "
+    const decoded = Buffer.from(token, "base64").toString("utf-8");
+    const userId = decoded.split(":")[0];
+
+    const user = await getUserById(userId);
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    const [followers, following, posts] = await Promise.all([
+      countFollowers(user.username),
+      countFollowing(user.username),
+      countPosts(user.username),
+    ]);
+
+    res.json({ ...user, followers, following, posts });
+  } catch (err) {
+    console.error("get current user error:", err);
+    res.status(500).json({ message: "Server error while fetching current user." });
+  }
+});
+
+/**
  * Create or update a user profile (called after Supabase Auth signup)
  * POST /users/create-profile
  * Body: { id, email, username, name?, gender?, bio?, avatar? }
@@ -153,11 +186,17 @@ router.get("/username/:username", async (req, res) => {
 /**
  * Update profile by id
  * PUT /users/:id
- * Body: { name?, gender?, bio?, avatar?, username? }
+ * Body: { name?, gender?, bio?, avatar?, username?, status?, age?, date_of_birth?,
+ *         country?, city?, flag?, interests?, about_me?, specialties?, 
+ *         latitude?, longitude?, is_online? }
  */
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
-  const { name, gender, bio, avatar, username } = req.body;
+  const { 
+    name, gender, bio, avatar, username, status, age, date_of_birth,
+    country, city, flag, interests, about_me, specialties,
+    latitude, longitude, is_online
+  } = req.body;
 
   try {
     if (username) {
@@ -173,9 +212,34 @@ router.put("/:id", async (req, res) => {
       }
     }
 
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (gender !== undefined) updates.gender = gender;
+    if (bio !== undefined) updates.bio = bio;
+    if (avatar !== undefined) updates.avatar = avatar;
+    if (username !== undefined) updates.username = username;
+    if (status !== undefined) updates.status = status;
+    if (age !== undefined) updates.age = age;
+    if (date_of_birth !== undefined) updates.date_of_birth = date_of_birth;
+    if (country !== undefined) updates.country = country;
+    if (city !== undefined) updates.city = city;
+    if (flag !== undefined) updates.flag = flag;
+    if (interests !== undefined) updates.interests = interests;
+    if (about_me !== undefined) updates.about_me = about_me;
+    if (specialties !== undefined) updates.specialties = specialties;
+    if (latitude !== undefined) updates.latitude = latitude;
+    if (longitude !== undefined) updates.longitude = longitude;
+    if (is_online !== undefined) updates.is_online = is_online;
+    if (is_online !== undefined || latitude !== undefined) {
+      updates.location_updated_at = new Date().toISOString();
+    }
+    if (!is_online && is_online !== undefined) {
+      updates.last_seen = new Date().toISOString();
+    }
+
     const { data, error } = await supabase
       .from("users")
-      .update({ name, gender, bio, avatar, username })
+      .update(updates)
       .eq("id", id)
       .select("*")
       .single();
@@ -189,6 +253,49 @@ router.put("/:id", async (req, res) => {
 });
 
 /* ------------------------------- Search & Check ------------------------------ */
+
+/**
+ * Get all users with optional filters
+ * GET /users?limit=20&gender=Male&min_age=18&max_age=30
+ */
+router.get("/", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 20), 100);
+  const genderParam = req.query.gender;
+  const minAge = req.query.min_age ? Number(req.query.min_age) : null;
+  const maxAge = req.query.max_age ? Number(req.query.max_age) : null;
+
+  // Validate gender parameter (only allow specific values)
+  const validGenders = ["Male", "Female", "Other"];
+  const gender = genderParam && validGenders.includes(genderParam) ? genderParam : null;
+
+  try {
+    let query = supabase
+      .from("users")
+      .select("id, email, name, avatar, bio, username, country, city, status, gender, age, latitude, longitude, is_online, interests")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (gender) {
+      query = query.eq("gender", gender);
+    }
+
+    if (minAge !== null) {
+      query = query.gte("age", minAge);
+    }
+
+    if (maxAge !== null) {
+      query = query.lte("age", maxAge);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    res.json(data || []);
+  } catch (err) {
+    console.error("get users error:", err);
+    res.status(500).json({ message: "Server error while fetching users." });
+  }
+});
 
 /**
  * Search users by username or name (case-insensitive)
@@ -228,6 +335,30 @@ router.get("/check-username", async (req, res) => {
   } catch (err) {
     console.error("check-username error:", err);
     res.status(500).json({ message: "Server error while checking username." });
+  }
+});
+
+/**
+ * Get user by ID (UUID format) - client-preferred endpoint
+ * GET /users/:id
+ * This must come before /:username routes to properly match UUIDs
+ */
+router.get("/:id([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const user = await getUserById(id);
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    const [followers, following, posts] = await Promise.all([
+      countFollowers(user.username),
+      countFollowing(user.username),
+      countPosts(user.username),
+    ]);
+
+    res.json({ ...user, followers, following, posts });
+  } catch (err) {
+    console.error("get by id error:", err);
+    res.status(500).json({ message: "Server error while fetching profile." });
   }
 });
 
@@ -489,7 +620,48 @@ router.get("/:username/liked-posts", async (req, res) => {
 /* ------------------------------- Avatar Upload -------------------------------- */
 
 /**
- * Upload avatar to Supabase Storage and update profile
+ * Upload avatar to Supabase Storage and update profile (client-preferred endpoint)
+ * POST /users/:userId/avatar
+ * FormData: avatar (file)
+ */
+router.post("/:userId/avatar", upload.single("avatar"), async (req, res) => {
+  const userId = req.params.userId;
+  const file = req.file;
+
+  if (!userId) return res.status(400).json({ message: "Missing user id." });
+  if (!file) return res.status(400).json({ message: "No file uploaded." });
+
+  try {
+    // Get user to read username for filename
+    const user = await getUserById(userId);
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    const fileName = `${user.username || userId}_${Date.now()}_${file.originalname}`;
+    const filePath = `avatars/${fileName}`;
+
+    // Upload to Storage
+    const up = await supabase.storage
+      .from("avatars")
+      .upload(filePath, file.buffer, { contentType: file.mimetype, upsert: true });
+    if (up.error) throw up.error;
+
+    // Public URL
+    const { data: publicUrl } = supabase.storage.from("avatars").getPublicUrl(filePath);
+    const avatarUrl = publicUrl.publicUrl;
+
+    // Update DB
+    const { error: updateErr } = await supabase.from("users").update({ avatar: avatarUrl }).eq("id", userId);
+    if (updateErr) throw updateErr;
+
+    res.json({ avatarUrl });
+  } catch (err) {
+    console.error("upload-avatar error:", err);
+    res.status(500).json({ message: "Server error while uploading avatar." });
+  }
+});
+
+/**
+ * Upload avatar to Supabase Storage and update profile (legacy endpoint)
  * POST /users/upload-avatar?id=<user_id>
  * FormData: avatar (file)
  */
@@ -547,6 +719,277 @@ router.get("/:username/stats", async (req, res) => {
   } catch (err) {
     console.error("stats error:", err);
     res.status(500).json({ message: "Server error while fetching stats." });
+  }
+});
+
+/* ---------------------------- User Languages ------------------------------- */
+
+/**
+ * Get user languages
+ * GET /users/:username/languages
+ */
+router.get("/:username/languages", async (req, res) => {
+  const { username } = req.params;
+  
+  try {
+    const { data, error } = await supabase
+      .from("user_languages")
+      .select("*")
+      .eq("username", username)
+      .order("created_at", { ascending: true });
+    
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error("get user languages error:", err);
+    res.status(500).json({ message: "Server error while fetching languages." });
+  }
+});
+
+/**
+ * Add or update user language
+ * POST /users/:username/languages
+ * Body: { language, proficiency }
+ */
+router.post("/:username/languages", async (req, res) => {
+  const { username } = req.params;
+  const { language, proficiency = "Intermediate" } = req.body;
+  
+  if (!language) return res.status(400).json({ message: "Missing language." });
+  
+  try {
+    const { data, error } = await supabase
+      .from("user_languages")
+      .upsert([{ username, language, proficiency }])
+      .select("*")
+      .single();
+    
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error("add user language error:", err);
+    res.status(500).json({ message: "Server error while adding language." });
+  }
+});
+
+/**
+ * Delete user language
+ * DELETE /users/:username/languages/:languageId
+ */
+router.delete("/:username/languages/:languageId", async (req, res) => {
+  const { username } = req.params;
+  const languageId = Number(req.params.languageId);
+  
+  try {
+    const { error } = await supabase
+      .from("user_languages")
+      .delete()
+      .eq("id", languageId)
+      .eq("username", username);
+    
+    if (error) throw error;
+    res.json({ message: "Language deleted." });
+  } catch (err) {
+    console.error("delete user language error:", err);
+    res.status(500).json({ message: "Server error while deleting language." });
+  }
+});
+
+/* ----------------------------- User Countries ------------------------------ */
+
+/**
+ * Get user countries (lived/visited)
+ * GET /users/:username/countries?type=lived|visited
+ */
+router.get("/:username/countries", async (req, res) => {
+  const { username } = req.params;
+  const type = req.query.type; // 'lived' or 'visited'
+  
+  try {
+    let query = supabase
+      .from("user_countries")
+      .select("*")
+      .eq("username", username)
+      .order("created_at", { ascending: true });
+    
+    if (type) {
+      query = query.eq("country_type", type);
+    }
+    
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error("get user countries error:", err);
+    res.status(500).json({ message: "Server error while fetching countries." });
+  }
+});
+
+/**
+ * Add user country
+ * POST /users/:username/countries
+ * Body: { country, country_type: 'lived'|'visited' }
+ */
+router.post("/:username/countries", async (req, res) => {
+  const { username } = req.params;
+  const { country, country_type } = req.body;
+  
+  if (!country || !country_type) {
+    return res.status(400).json({ message: "Missing country or country_type." });
+  }
+  
+  try {
+    const { data, error } = await supabase
+      .from("user_countries")
+      .upsert([{ username, country, country_type }])
+      .select("*")
+      .single();
+    
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error("add user country error:", err);
+    res.status(500).json({ message: "Server error while adding country." });
+  }
+});
+
+/**
+ * Delete user country
+ * DELETE /users/:username/countries/:countryId
+ */
+router.delete("/:username/countries/:countryId", async (req, res) => {
+  const { username } = req.params;
+  const countryId = Number(req.params.countryId);
+  
+  try {
+    const { error } = await supabase
+      .from("user_countries")
+      .delete()
+      .eq("id", countryId)
+      .eq("username", username);
+    
+    if (error) throw error;
+    res.json({ message: "Country deleted." });
+  } catch (err) {
+    console.error("delete user country error:", err);
+    res.status(500).json({ message: "Server error while deleting country." });
+  }
+});
+
+/* ------------------------- Profile Completion ------------------------------ */
+
+/**
+ * Calculate and get profile completion percentage
+ * GET /users/:username/profile-completion
+ */
+router.get("/:username/profile-completion", async (req, res) => {
+  const { username } = req.params;
+  
+  try {
+    const user = await getUserByUsername(username);
+    if (!user) return res.status(404).json({ message: "User not found." });
+    
+    let completion = 0;
+    const checklist = [];
+    
+    // Name (10%)
+    if (user.name && user.name.trim()) {
+      completion += 10;
+      checklist.push({ item: "Add name", completed: true });
+    } else {
+      checklist.push({ item: "Add name", completed: false });
+    }
+    
+    // Bio (10%)
+    if (user.bio && user.bio.trim()) {
+      completion += 10;
+      checklist.push({ item: "Add bio", completed: true });
+    } else {
+      checklist.push({ item: "Add bio", completed: false });
+    }
+    
+    // About me (10%)
+    if (user.about_me && user.about_me.trim()) {
+      completion += 10;
+      checklist.push({ item: "Add about me", completed: true });
+    } else {
+      checklist.push({ item: "Add about me", completed: false });
+    }
+    
+    // Avatar (15%)
+    if (user.avatar && user.avatar.trim()) {
+      completion += 15;
+      checklist.push({ item: "Upload photo", completed: true });
+    } else {
+      checklist.push({ item: "Upload photo", completed: false });
+    }
+    
+    // Email confirmed (15%)
+    if (user.email_confirmed) {
+      completion += 15;
+      checklist.push({ item: "Confirm email", completed: true });
+    } else {
+      checklist.push({ item: "Confirm email", completed: false });
+    }
+    
+    // Location (10%)
+    if (user.country && user.city) {
+      completion += 10;
+      checklist.push({ item: "Add location", completed: true });
+    } else {
+      checklist.push({ item: "Add location", completed: false });
+    }
+    
+    // Languages (10%)
+    const { data: languages, error: langErr } = await supabase
+      .from("user_languages")
+      .select("id")
+      .eq("username", username)
+      .limit(1);
+    
+    if (!langErr && languages && languages.length > 0) {
+      completion += 10;
+      checklist.push({ item: "Add languages", completed: true });
+    } else {
+      checklist.push({ item: "Add languages", completed: false });
+    }
+    
+    // Interests (10%)
+    if (user.interests && Array.isArray(user.interests) && user.interests.length > 0) {
+      completion += 10;
+      checklist.push({ item: "Add interests", completed: true });
+    } else {
+      checklist.push({ item: "Add interests", completed: false });
+    }
+    
+    // Countries visited/lived (10%)
+    const { data: countries, error: countryErr } = await supabase
+      .from("user_countries")
+      .select("id")
+      .eq("username", username)
+      .limit(1);
+    
+    if (!countryErr && countries && countries.length > 0) {
+      completion += 10;
+      checklist.push({ item: "Add countries", completed: true });
+    } else {
+      checklist.push({ item: "Add countries", completed: false });
+    }
+    
+    // Update the completion percentage in the database
+    await supabase
+      .from("users")
+      .update({ profile_completion_percentage: completion })
+      .eq("username", username);
+    
+    res.json({
+      username,
+      completion_percentage: completion,
+      checklist
+    });
+  } catch (err) {
+    console.error("profile completion error:", err);
+    res.status(500).json({ message: "Server error while calculating profile completion." });
   }
 });
 
