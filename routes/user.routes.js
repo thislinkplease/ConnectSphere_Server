@@ -546,6 +546,31 @@ router.get("/:username/follow-status", async (req, res) => {
   }
 });
 
+/**
+ * Check if followerUsername is following username (client-preferred endpoint)
+ * GET /users/:username/following/:followerUsername
+ * Returns: { isFollowing: boolean }
+ */
+router.get("/:username/following/:followerUsername", async (req, res) => {
+  const target = req.params.username;
+  const viewer = req.params.followerUsername;
+
+  try {
+    const { data, error } = await supabase
+      .from("user_follows")
+      .select("id")
+      .eq("follower_username", viewer)
+      .eq("followee_username", target)
+      .limit(1);
+
+    if (error) throw error;
+    res.json({ isFollowing: !!(data && data.length) });
+  } catch (err) {
+    console.error("check following error:", err);
+    res.status(500).json({ message: "Server error while checking follow status." });
+  }
+});
+
 /* ------------------------------- User Content -------------------------------- */
 
 /**
