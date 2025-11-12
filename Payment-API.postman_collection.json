@@ -1,0 +1,170 @@
+{
+  "info": {
+    "name": "ConnectSphere Payment & Subscription API",
+    "description": "Payment and subscription endpoints for Pro features",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "testUsername",
+      "value": "testuser",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Payment Endpoints",
+      "item": [
+        {
+          "name": "Get Available Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments/plans",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "plans"]
+            },
+            "description": "Get all available subscription plans (Free and Pro)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get User Subscription",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments/subscription?username={{testUsername}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "subscription"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "{{testUsername}}"
+                }
+              ]
+            },
+            "description": "Get current subscription status for a user"
+          },
+          "response": []
+        },
+        {
+          "name": "Subscribe to Pro",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\",\n  \"plan_type\": \"pro\",\n  \"payment_method\": \"test\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/payments/subscribe",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "subscribe"]
+            },
+            "description": "Subscribe to Pro plan (test payment - no real money)"
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Subscription",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{testUsername}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/payments/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "cancel"]
+            },
+            "description": "Cancel subscription and downgrade to Free plan"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Payment History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments/history?username={{testUsername}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["payments", "history"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "{{testUsername}}"
+                }
+              ]
+            },
+            "description": "Get all payment transactions for a user"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Updated Message Endpoints",
+      "item": [
+        {
+          "name": "Get Conversations (with other_participant)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/messages/conversations?user={{testUsername}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages", "conversations"],
+              "query": [
+                {
+                  "key": "user",
+                  "value": "{{testUsername}}"
+                }
+              ]
+            },
+            "description": "Get all conversations for a user. Now includes other_participant field for DM conversations with name and avatar."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "User Profile (with premium fields)",
+      "item": [
+        {
+          "name": "Get User Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/username/{{testUsername}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "username", "{{testUsername}}"]
+            },
+            "description": "Get user profile. Now includes is_premium, max_friends, and theme_preference fields."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
