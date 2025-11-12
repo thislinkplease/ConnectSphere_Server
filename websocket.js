@@ -115,9 +115,14 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           return;
         }
 
-        // Broadcast the message to all members in the room
+        // Emit to sender (confirmation) and broadcast to others in the room
         const roomName = `conversation_${conversationId}`;
-        io.to(roomName).emit("new_message", message);
+        
+        // Send confirmation to sender with the saved message
+        socket.emit("message_sent", message);
+        
+        // Broadcast to others in the room (not to sender)
+        socket.to(roomName).emit("new_message", message);
 
         console.log(`Message sent in conversation ${conversationId} by ${senderUsername}`);
       } catch (err) {

@@ -51,6 +51,7 @@ const communityRoutes = require("./routes/community.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const quickMessageRoutes = require("./routes/quickMessage.routes");
 const authRoutes = require("./routes/auth.routes");
+const paymentRoutes = require("./routes/payment.routes");
 
 app.use("/auth", authRoutes);
 app.use("/users", userRoutes);
@@ -61,6 +62,7 @@ app.use("/hangouts", hangoutRoutes);
 app.use("/communities", communityRoutes);
 app.use("/notifications", notificationRoutes);
 app.use("/quick-messages", quickMessageRoutes);
+app.use("/payments", paymentRoutes);
 
 // Root route
 app.get("/", (_req, res) => {
