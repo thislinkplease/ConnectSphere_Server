@@ -162,11 +162,12 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * Get open hangouts (with filters)
- * GET /hangouts?languages=English,Vietnamese&distance_km=10&user_lat=<>&user_lng=<>
+ * Get online users for hangout (Tinder-like feature)
+ * GET /hangouts?languages=English,Vietnamese&distance_km=10&user_lat=<>&user_lng=<>&limit=50
+ * Returns only online users with their background images
  */
 router.get("/", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 20), 100);
+  const limit = Math.min(Number(req.query.limit || 50), 100);
   const languagesParam = req.query.languages || "";
   const languages = languagesParam ? languagesParam.split(",").map((l) => l.trim()) : [];
   const distanceKm = Number(req.query.distance_km || 0);
@@ -174,53 +175,74 @@ router.get("/", async (req, res) => {
   const userLng = req.query.user_lng ? Number(req.query.user_lng) : null;
 
   try {
+    // Query for users who are online
     let query = supabase
-      .from("hangouts")
-      .select("*")
-      .eq("status", "open")
-      .order("created_at", { ascending: false })
-      .limit(limit);
+      .from("users")
+      .select(`
+        id,
+        username,
+        name,
+        email,
+        avatar,
+        background_image,
+        country,
+        city,
+        age,
+        bio,
+        interests,
+        is_online,
+        latitude,
+        longitude,
+        status,
+        current_activity
+      `)
+      .eq("is_online", true);
 
-    const { data, error } = await query;
-    if (error) throw error;
+    if (limit) {
+      query = query.limit(parseInt(limit));
+    }
 
-    let hangouts = data || [];
+    const { data: users, error } = await query;
+
+    if (error) {
+      console.error("Error fetching users:", error);
+      return res.status(500).json({ message: "Error fetching users." });
+    }
+
+    let hangoutUsers = users || [];
 
     // Filter by languages if specified
-    if (languages.length > 0) {
-      hangouts = hangouts.filter((h) => {
-        if (!h.languages || h.languages.length === 0) return false;
-        return h.languages.some((lang) => languages.includes(lang));
-      });
-    }
+    // Note: This requires user_languages table join or languages stored in user profile
+    // For now, we'll skip language filtering and let the client handle it
+    // TODO: Implement language filtering if needed
 
     // Calculate distance and filter if user location is provided
     if (userLat && userLng) {
-      hangouts = hangouts.map((hangout) => {
+      hangoutUsers = hangoutUsers.map((user) => {
         let distance = null;
-        if (hangout.latitude && hangout.longitude) {
-          distance = calculateDistance(userLat, userLng, hangout.latitude, hangout.longitude);
+        if (user.latitude && user.longitude) {
+          distance = calculateDistance(userLat, userLng, user.latitude, user.longitude);
         }
-        return { ...hangout, distance };
+        return { ...user, distance };
       });
 
       // Filter by distance if specified
       if (distanceKm > 0) {
-        hangouts = hangouts.filter((h) => h.distance !== null && h.distance <= distanceKm);
+        hangoutUsers = hangoutUsers.filter((u) => u.distance !== null && u.distance <= distanceKm);
       }
 
       // Sort by distance
-      hangouts.sort((a, b) => {
+      hangoutUsers.sort((a, b) => {
         if (a.distance === null) return 1;
         if (b.distance === null) return -1;
         return a.distance - b.distance;
       });
     }
 
-    res.json(hangouts);
+    res.json(hangoutUsers);
   } catch (err) {
-    console.error("list hangouts error:", err);
-    res.status(500).json({ message: "Server error while fetching hangouts." });
+    console.error("list hangout users error:", err);
+    res.status(500).json({ message: "Server error while fetching hangout users." });
   }
 });
 

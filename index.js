@@ -4,10 +4,38 @@ const cors = require("cors");
 const morgan = require("morgan");
 const http = require("http");
 const { initializeWebSocket } = require("./websocket");
+const { supabase } = require("./db/supabaseClient");
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+
+// Initialize background-images storage bucket
+async function initializeStorageBucket() {
+  try {
+    const { data, error } = await supabase.storage.createBucket("background-images", {
+      public: true,
+      fileSizeLimit: 10485760, // 10MB
+      allowedMimeTypes: ["image/jpeg", "image/png", "image/jpg"],
+    });
+
+    if (error) {
+      // Bucket already exists is not an error
+      if (error.message && error.message.toLowerCase().includes("already exists")) {
+        console.log("✅ Background images bucket already exists");
+      } else {
+        console.error("❌ Error creating background-images bucket:", error);
+      }
+    } else {
+      console.log("✅ Background images bucket created successfully");
+    }
+  } catch (err) {
+    console.error("❌ Error initializing storage bucket:", err);
+  }
+}
+
+// Initialize bucket on startup
+initializeStorageBucket();
 
 // Trust reverse proxies (for services like Railway, Render, etc.)
 app.set("trust proxy", 1);

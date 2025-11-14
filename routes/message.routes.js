@@ -197,14 +197,6 @@ router.get("/conversations", async (req, res) => {
     const convIds = (membership || []).map((m) => m.conversation_id);
     if (convIds.length === 0) return res.json([]);
 
-    // Pull overview (last message time + unread)
-    const { data: overview, error: oErr } = await supabase
-      .from("v_conversation_overview")
-      .select("conversation_id, username, last_message_at, unread_count")
-      .eq("username", viewer)
-      .in("conversation_id", convIds);
-    if (oErr) throw oErr;
-
     // Fetch minimal conversation info
     const { data: convs, error: cErr } = await supabase
       .from("conversations")
@@ -236,13 +228,134 @@ router.get("/conversations", async (req, res) => {
       if (!lastByConv.has(m.conversation_id)) lastByConv.set(m.conversation_id, m);
     });
 
-    const unreadByConv = new Map((overview || []).map((o) => [o.conversation_id, o.unread_count || 0]));
+    // Calculate unread counts for each conversation
+    // Try to use the view first (if it exists), fall back to direct calculation
+    const unreadByConv = new Map();
+    
+    try {
+      // Try using the optimized view
+      const { data: overview, error: oErr } = await supabase
+        .from("v_conversation_overview")
+        .select("conversation_id, username, last_message_at, unread_count")
+        .eq("username", viewer)
+        .in("conversation_id", convIds);
+      
+      if (!oErr && overview) {
+        // View exists and worked
+        overview.forEach(o => unreadByConv.set(o.conversation_id, o.unread_count || 0));
+      } else {
+        throw new Error("View not available, using fallback");
+      }
+    } catch (viewErr) {
+      // Fallback: Calculate unread counts directly (optimized batch query)
+      if (convIds.length > 0) {
+        // Get all messages for all conversations
+        const { data: allConvMsgs, error: allMsgErr } = await supabase
+          .from("messages")
+          .select("id, conversation_id")
+          .in("conversation_id", convIds);
+        
+        if (!allMsgErr && allConvMsgs) {
+          const allMsgIds = allConvMsgs.map(m => m.id);
+          
+          // Get all messages this user has read
+          const { data: allReads, error: readErr } = await supabase
+            .from("message_reads")
+            .select("message_id")
+            .eq("username", viewer)
+            .in("message_id", allMsgIds);
+          
+          if (!readErr) {
+            const readIdSet = new Set((allReads || []).map(r => r.message_id));
+            
+            // Count unread messages per conversation
+            const unreadCounts = new Map();
+            allConvMsgs.forEach(msg => {
+              if (!readIdSet.has(msg.id)) {
+                unreadCounts.set(msg.conversation_id, (unreadCounts.get(msg.conversation_id) || 0) + 1);
+              }
+            });
+            
+            // Set unread counts (default to 0 if no unread messages)
+            convIds.forEach(convId => {
+              unreadByConv.set(convId, unreadCounts.get(convId) || 0);
+            });
+          } else {
+            // If error reading, set all to 0
+            convIds.forEach(convId => unreadByConv.set(convId, 0));
+          }
+        } else {
+          // If error getting messages, set all to 0
+          convIds.forEach(convId => unreadByConv.set(convId, 0));
+        }
+      }
+    }
+
+    // For DM conversations, get the other participant's info (optimized)
+    const dmConvs = (convs || []).filter((c) => c.type === "dm");
+    const otherParticipants = new Map();
+    
+    if (dmConvs.length > 0) {
+      const dmConvIds = dmConvs.map(c => c.id);
+      
+      // Fetch all members for DM conversations in one query
+      const { data: allMembers, error: memErr } = await supabase
+        .from("conversation_members")
+        .select("conversation_id, username")
+        .in("conversation_id", dmConvIds);
+      
+      if (!memErr && allMembers) {
+        // Group members by conversation_id
+        const membersByConv = new Map();
+        allMembers.forEach((m) => {
+          if (!membersByConv.has(m.conversation_id)) {
+            membersByConv.set(m.conversation_id, []);
+          }
+          membersByConv.get(m.conversation_id).push(m.username);
+        });
+        
+        // Find other usernames
+        const otherUsernames = [];
+        const convToUsername = new Map();
+        membersByConv.forEach((members, convId) => {
+          if (members.length === 2) {
+            const otherUsername = members.find((u) => u !== viewer);
+            if (otherUsername) {
+              otherUsernames.push(otherUsername);
+              convToUsername.set(convId, otherUsername);
+            }
+          }
+        });
+        
+        // Fetch all other users in one query
+        if (otherUsernames.length > 0) {
+          const { data: otherUsers, error: userErr } = await supabase
+            .from("users")
+            .select("id, username, name, avatar")
+            .in("username", otherUsernames);
+          
+          if (!userErr && otherUsers) {
+            // Map users by username
+            const usersByUsername = new Map(otherUsers.map((u) => [u.username, u]));
+            
+            // Build the otherParticipants map
+            convToUsername.forEach((username, convId) => {
+              const user = usersByUsername.get(username);
+              if (user) {
+                otherParticipants.set(convId, user);
+              }
+            });
+          }
+        }
+      }
+    }
 
     const enriched = (convs || [])
       .map((c) => ({
         ...c,
         last_message: lastByConv.get(c.id) || null,
         unread_count: unreadByConv.get(c.id) || 0,
+        other_participant: c.type === "dm" ? otherParticipants.get(c.id) || null : null,
       }))
       .sort((a, b) => {
         const ta = a.last_message ? new Date(a.last_message.created_at).getTime() : 0;
