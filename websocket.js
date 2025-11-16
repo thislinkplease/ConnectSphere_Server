@@ -19,50 +19,93 @@ function initializeWebSocket(httpServer, allowedOrigins) {
   const onlineUsers = new Map();
 
   io.on("connection", (socket) => {
-    console.log("WebSocket client connected:", socket.id);
+    console.log("🔌 WebSocket client connected:", socket.id);
 
     let currentUsername = null;
+    let heartbeatInterval = null;
 
     // Handle authentication
     const token = socket.handshake.auth.token;
+    
+    console.log("🔐 WebSocket auth attempt:", {
+      socketId: socket.id,
+      hasToken: !!token,
+      tokenLength: token?.length,
+    });
+    
     if (token) {
       // In production, verify JWT token here
       // For now, we'll extract username from the token (base64 encoded: id:timestamp)
-      try {
-        const decoded = Buffer.from(token, "base64").toString("utf-8");
-        const userId = decoded.split(":")[0];
-        
-        // Get user from database
-        supabase
-          .from("users")
-          .select("username")
-          .eq("id", userId)
-          .single()
-          .then(({ data, error }) => {
-            if (!error && data) {
-              currentUsername = data.username;
-              onlineUsers.set(currentUsername, socket.id);
-              
-              // Update user online status in database
-              supabase
-                .from("users")
-                .update({ is_online: true })
-                .eq("username", currentUsername)
-                .then(() => {
-                  // Notify others that user is online
-                  socket.broadcast.emit("user_status", {
-                    username: currentUsername,
-                    isOnline: true,
-                  });
-                });
-              
-              console.log(`User ${currentUsername} authenticated and online`);
-            }
-          });
-      } catch (err) {
-        console.error("Auth error:", err);
-      }
+      (async () => {
+        try {
+          const decoded = Buffer.from(token, "base64").toString("utf-8");
+          const userId = decoded.split(":")[0];
+          
+          console.log("🔍 Decoded token - userId:", userId);
+          
+          // Get user from database
+          const { data, error } = await supabase
+            .from("users")
+            .select("username, id")
+            .eq("id", userId)
+            .single();
+          
+          if (error || !data) {
+            console.error("❌ User not found for ID:", userId, error);
+            return;
+          }
+          
+          console.log("✅ User authenticated:", data.username);
+          
+          currentUsername = data.username;
+          onlineUsers.set(currentUsername, socket.id);
+          
+          // Update user online status in database with error handling
+          const { error: updateError } = await supabase
+            .from("users")
+            .update({ is_online: true })
+            .eq("username", currentUsername);
+          
+          if (updateError) {
+            console.error("❌ Failed to update online status:", updateError);
+          } else {
+            console.log(`✅ ${currentUsername} marked as online`);
+            
+            // Notify others that user is online
+            socket.broadcast.emit("user_status", {
+              username: currentUsername,
+              isOnline: true,
+            });
+          }
+          
+          // Start heartbeat mechanism
+          heartbeatInterval = setInterval(() => {
+            socket.emit("heartbeat");
+          }, 30000); // Send heartbeat every 30 seconds
+          
+        } catch (err) {
+          console.error("❌ Auth error:", err);
+        }
+      })();
     }
+    
+    // Handle heartbeat acknowledgment
+    socket.on("heartbeat_ack", async () => {
+      // User is still active, refresh online status
+      if (currentUsername) {
+        try {
+          await supabase
+            .from("users")
+            .update({ 
+              is_online: true,
+              last_seen: new Date().toISOString()
+            })
+            .eq("username", currentUsername);
+        } catch (err) {
+          console.error("❌ Error updating heartbeat status:", err);
+        }
+      }
+    });
 
     // Join a conversation room
     socket.on("join_conversation", ({ conversationId }) => {
@@ -95,6 +138,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
         }
 
         // Insert message into database
+        // Insert message with sender profile joined
         const { data: message, error } = await supabase
           .from("messages")
           .insert([
@@ -106,7 +150,17 @@ function initializeWebSocket(httpServer, allowedOrigins) {
               reply_to_message_id: replyToMessageId || null,
             },
           ])
-          .select("id, conversation_id, sender_username, message_type, content, reply_to_message_id, created_at, updated_at")
+          .select(`
+            id,
+            conversation_id,
+            sender_username,
+            message_type,
+            content,
+            reply_to_message_id,
+            created_at,
+            updated_at,
+            sender:users!messages_sender_username_fkey(id, username, name, avatar, email, country, city, status, bio, age, gender, interests, is_online)
+          `)
           .single();
 
         if (error) {
@@ -115,16 +169,25 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           return;
         }
 
-        // Emit to sender (confirmation) and broadcast to others in the room
-        const roomName = `conversation_${conversationId}`;
-        
-        // Send confirmation to sender with the saved message
-        socket.emit("message_sent", message);
-        
-        // Broadcast to others in the room (not to sender)
-        socket.to(roomName).emit("new_message", message);
+// Emit to sender (confirmation) and broadcast to others in the room
+const roomName = `conversation_${conversationId}`;
 
-        console.log(`Message sent in conversation ${conversationId} by ${senderUsername}`);
+// Create message payload with complete data
+const messagePayload = {
+  ...message,
+  chatId: conversationId,  // Add for client compatibility
+  senderId: senderUsername, // Add for client compatibility
+  timestamp: message.created_at, // Add for client compatibility
+};
+
+// Emit to sender (confirmation)
+socket.emit("message_sent", messagePayload);
+
+// Broadcast to ALL clients in the room (including sender) for inbox list updates
+// This ensures inbox lists update in real-time for all participants
+io.to(roomName).emit("new_message", messagePayload);
+
+console.log(`Message sent in conversation ${conversationId} by ${senderUsername}`);
       } catch (err) {
         console.error("send_message error:", err);
         socket.emit("error", { message: "Server error while sending message" });
@@ -176,27 +239,46 @@ function initializeWebSocket(httpServer, allowedOrigins) {
     });
 
     // Handle disconnect
-    socket.on("disconnect", () => {
-      console.log("WebSocket client disconnected:", socket.id);
+    socket.on("disconnect", async (reason) => {
+      console.log("❌ WebSocket disconnected:", {
+        socketId: socket.id,
+        username: currentUsername,
+        reason,
+      });
+      
+      // Clear heartbeat interval
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
       
       if (currentUsername) {
         onlineUsers.delete(currentUsername);
         
-        // Update user offline status in database
-        supabase
-          .from("users")
-          .update({ 
-            is_online: false,
-            last_seen: new Date().toISOString() 
-          })
-          .eq("username", currentUsername)
-          .then(() => {
+        try {
+          // Update user offline status in database
+          const { error } = await supabase
+            .from("users")
+            .update({ 
+              is_online: false,
+              last_seen: new Date().toISOString() 
+            })
+            .eq("username", currentUsername);
+          
+          if (error) {
+            console.error("❌ Failed to update offline status:", error);
+          } else {
+            console.log(`✅ ${currentUsername} marked as offline`);
+            
             // Notify others that user is offline
             socket.broadcast.emit("user_status", {
               username: currentUsername,
               isOnline: false,
             });
-          });
+          }
+        } catch (err) {
+          console.error("❌ Error in disconnect handler:", err);
+        }
       }
     });
   });

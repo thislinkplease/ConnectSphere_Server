@@ -216,7 +216,8 @@ router.get("/conversations", async (req, res) => {
         content,
         created_at,
         message_media(id, media_url, media_type, position),
-        sender:users!messages_sender_username_fkey(id, username, name, avatar)
+        sender:users!messages_sender_username_fkey(id, username, name, avatar, email, country, city, status, bio, age, gender, interests, is_online)
+
       `)
       .in("conversation_id", Array.from(convIdSet))
       .order("created_at", { ascending: false })
@@ -331,7 +332,7 @@ router.get("/conversations", async (req, res) => {
         if (otherUsernames.length > 0) {
           const { data: otherUsers, error: userErr } = await supabase
             .from("users")
-            .select("id, username, name, avatar")
+            .select("id, username, name, avatar, email, country, city, status, bio, age, gender, interests, is_online")
             .in("username", otherUsernames);
           
           if (!userErr && otherUsers) {

@@ -175,7 +175,25 @@ router.get("/", async (req, res) => {
   const userLng = req.query.user_lng ? Number(req.query.user_lng) : null;
 
   try {
-    // Query for users who are online
+    // First, get usernames of users who are available for hangout
+    const { data: availableStatuses, error: statusErr } = await supabase
+      .from("user_hangout_status")
+      .select("username")
+      .eq("is_available", true);
+    
+    if (statusErr) {
+      console.error("Error fetching hangout statuses:", statusErr);
+      // Fall back to showing all online users if status query fails
+    }
+    
+    const availableUsernames = availableStatuses?.map(s => s.username) || [];
+    
+    // If no users are available, return empty array
+    if (availableUsernames.length === 0) {
+      return res.json([]);
+    }
+    
+    // Query for users who are online AND available for hangout
     let query = supabase
       .from("users")
       .select(`
@@ -196,7 +214,8 @@ router.get("/", async (req, res) => {
         status,
         current_activity
       `)
-      .eq("is_online", true);
+      .eq("is_online", true)
+      .in("username", availableUsernames);  // ← ADD THIS FILTER
 
     if (limit) {
       query = query.limit(parseInt(limit));
@@ -210,11 +229,6 @@ router.get("/", async (req, res) => {
     }
 
     let hangoutUsers = users || [];
-
-    // Filter by languages if specified
-    // Note: This requires user_languages table join or languages stored in user profile
-    // For now, we'll skip language filtering and let the client handle it
-    // TODO: Implement language filtering if needed
 
     // Calculate distance and filter if user location is provided
     if (userLat && userLng) {
