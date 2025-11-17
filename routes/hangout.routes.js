@@ -79,7 +79,7 @@ router.get("/status/:username", async (req, res) => {
       .from("user_hangout_status")
       .select("*")
       .eq("username", username)
-      .maybeSingle();                
+      .maybeSingle();
 
     if (error) {
       console.error("[DEBUG] hangout status supabase error:", error);
@@ -180,19 +180,19 @@ router.get("/", async (req, res) => {
       .from("user_hangout_status")
       .select("username")
       .eq("is_available", true);
-    
+
     if (statusErr) {
       console.error("Error fetching hangout statuses:", statusErr);
       // Fall back to showing all online users if status query fails
     }
-    
-    const availableUsernames = availableStatuses?.map(s => s.username) || [];
-    
+
+    const availableUsernames = availableStatuses?.map((s) => s.username) || [];
+
     // If no users are available, return empty array
     if (availableUsernames.length === 0) {
       return res.json([]);
     }
-    
+
     // Query for users who are online AND available for hangout
     let query = supabase
       .from("users")
@@ -215,10 +215,11 @@ router.get("/", async (req, res) => {
         current_activity
       `)
       .eq("is_online", true)
-      .in("username", availableUsernames);  // ← ADD THIS FILTER
+      .in("username", availableUsernames)
+      .not("username", "is", null); // <-- CHAIN đúng (không có dấu ';' trước)
 
     if (limit) {
-      query = query.limit(parseInt(limit));
+      query = query.limit(limit);
     }
 
     const { data: users, error } = await query;
@@ -230,11 +231,28 @@ router.get("/", async (req, res) => {
 
     let hangoutUsers = users || [];
 
+    if (hangoutUsers.length > 0) {
+      console.log(`[Hangout] First user:`, {
+        id: hangoutUsers[0].id,
+        username: hangoutUsers[0].username,
+        name: hangoutUsers[0].name,
+      });
+
+      // Validate all users have username
+      const usersWithoutUsername = hangoutUsers.filter((u) => !u.username);
+      if (usersWithoutUsername.length > 0) {
+        console.warn(
+          `[Hangout] WARNING: ${usersWithoutUsername.length} users without username!`,
+          usersWithoutUsername.map((u) => ({ id: u.id, name: u.name }))
+        );
+      }
+    }
+
     // Calculate distance and filter if user location is provided
-    if (userLat && userLng) {
+    if (userLat !== null && userLng !== null) {
       hangoutUsers = hangoutUsers.map((user) => {
         let distance = null;
-        if (user.latitude && user.longitude) {
+        if (user.latitude != null && user.longitude != null) {
           distance = calculateDistance(userLat, userLng, user.latitude, user.longitude);
         }
         return { ...user, distance };
@@ -253,7 +271,8 @@ router.get("/", async (req, res) => {
       });
     }
 
-    res.json(hangoutUsers);
+    // Trả về kết quả ở ngoài khối if để luôn gửi response
+    return res.json(hangoutUsers);
   } catch (err) {
     console.error("list hangout users error:", err);
     res.status(500).json({ message: "Server error while fetching hangout users." });

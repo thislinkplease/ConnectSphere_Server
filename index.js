@@ -22,15 +22,15 @@ async function initializeStorageBucket() {
     if (error) {
       // Bucket already exists is not an error
       if (error.message && error.message.toLowerCase().includes("already exists")) {
-        console.log("✅ Background images bucket already exists");
+        console.log("Background images bucket already exists");
       } else {
-        console.error("❌ Error creating background-images bucket:", error);
+        console.error("Error creating background-images bucket:", error);
       }
     } else {
-      console.log("✅ Background images bucket created successfully");
+      console.log("Background images bucket created successfully");
     }
   } catch (err) {
-    console.error("❌ Error initializing storage bucket:", err);
+    console.error("Error initializing storage bucket:", err);
   }
 }
 
@@ -94,7 +94,7 @@ app.use("/payments", paymentRoutes);
 
 // Root route
 app.get("/", (_req, res) => {
-  res.send("ConnectSphere API is up and running 🚀");
+  res.send("Flat Sphere API is up and running 🚀");
 });
 
 // 404 handler for unmatched routes
@@ -111,6 +111,6 @@ app.use((err, _req, res, _next) => {
 // Start the server
 server.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
-  console.log(`📡 WebSocket server ready`);
+  console.log(`WebSocket server ready`);
 });
 
