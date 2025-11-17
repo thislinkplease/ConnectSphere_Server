@@ -19,7 +19,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
   const onlineUsers = new Map();
 
   io.on("connection", (socket) => {
-    console.log("🔌 WebSocket client connected:", socket.id);
+    console.log("WebSocket client connected:", socket.id);
 
     let currentUsername = null;
     let heartbeatInterval = null;
@@ -27,7 +27,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
     // Handle authentication
     const token = socket.handshake.auth.token;
     
-    console.log("🔐 WebSocket auth attempt:", {
+    console.log("WebSocket auth attempt:", {
       socketId: socket.id,
       hasToken: !!token,
       tokenLength: token?.length,
@@ -41,7 +41,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           const decoded = Buffer.from(token, "base64").toString("utf-8");
           const userId = decoded.split(":")[0];
           
-          console.log("🔍 Decoded token - userId:", userId);
+          console.log("Decoded token - userId:", userId);
           
           // Get user from database
           const { data, error } = await supabase
@@ -51,13 +51,15 @@ function initializeWebSocket(httpServer, allowedOrigins) {
             .single();
           
           if (error || !data) {
-            console.error("❌ User not found for ID:", userId, error);
+            console.error("User not found for ID:", userId, error);
             return;
           }
           
-          console.log("✅ User authenticated:", data.username);
+          console.log("User authenticated:", data.username);
           
           currentUsername = data.username;
+          // Store username on socket object for easy lookup
+          socket.username = currentUsername;
           onlineUsers.set(currentUsername, socket.id);
           
           // Update user online status in database with error handling
@@ -67,9 +69,9 @@ function initializeWebSocket(httpServer, allowedOrigins) {
             .eq("username", currentUsername);
           
           if (updateError) {
-            console.error("❌ Failed to update online status:", updateError);
+            console.error("Failed to update online status:", updateError);
           } else {
-            console.log(`✅ ${currentUsername} marked as online`);
+            console.log(`${currentUsername} marked as online`);
             
             // Notify others that user is online
             socket.broadcast.emit("user_status", {
@@ -84,7 +86,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           }, 30000); // Send heartbeat every 30 seconds
           
         } catch (err) {
-          console.error("❌ Auth error:", err);
+          console.error("Auth error:", err);
         }
       })();
     }
@@ -102,7 +104,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
             })
             .eq("username", currentUsername);
         } catch (err) {
-          console.error("❌ Error updating heartbeat status:", err);
+          console.error("Error updating heartbeat status:", err);
         }
       }
     });
@@ -122,9 +124,10 @@ function initializeWebSocket(httpServer, allowedOrigins) {
     });
 
     // Send a message
+        // Send a message
     socket.on("send_message", async ({ conversationId, senderUsername, content, replyToMessageId }) => {
       try {
-        // Verify sender is a member
+        // 1. Verify membership
         const { data: membership } = await supabase
           .from("conversation_members")
           .select("username")
@@ -137,19 +140,16 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           return;
         }
 
-        // Insert message into database
-        // Insert message with sender profile joined
+        // 2. Insert message (giữ nguyên phần insert cũ)
         const { data: message, error } = await supabase
           .from("messages")
-          .insert([
-            {
-              conversation_id: conversationId,
-              sender_username: senderUsername,
-              message_type: "text",
-              content,
-              reply_to_message_id: replyToMessageId || null,
-            },
-          ])
+          .insert([{
+            conversation_id: conversationId,
+            sender_username: senderUsername,
+            message_type: "text",
+            content,
+            reply_to_message_id: replyToMessageId || null,
+          }])
           .select(`
             id,
             conversation_id,
@@ -158,7 +158,6 @@ function initializeWebSocket(httpServer, allowedOrigins) {
             content,
             reply_to_message_id,
             created_at,
-            updated_at,
             sender:users!messages_sender_username_fkey(id, username, name, avatar, email, country, city, status, bio, age, gender, interests, is_online)
           `)
           .single();
@@ -169,25 +168,49 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           return;
         }
 
-// Emit to sender (confirmation) and broadcast to others in the room
-const roomName = `conversation_${conversationId}`;
+        const roomName = `conversation_${conversationId}`;
 
-// Create message payload with complete data
-const messagePayload = {
-  ...message,
-  chatId: conversationId,  // Add for client compatibility
-  senderId: senderUsername, // Add for client compatibility
-  timestamp: message.created_at, // Add for client compatibility
-};
+        // 3. Build payload
+        const messagePayload = {
+          ...message,
+          chatId: conversationId,
+          senderId: message.sender_username,
+          timestamp: message.created_at,
+        };
 
-// Emit to sender (confirmation)
-socket.emit("message_sent", messagePayload);
+        // 4. Get all participants of conversation
+        const { data: participants } = await supabase
+          .from("conversation_members")
+          .select("username")
+          .eq("conversation_id", conversationId);
 
-// Broadcast to ALL clients in the room (including sender) for inbox list updates
-// This ensures inbox lists update in real-time for all participants
-io.to(roomName).emit("new_message", messagePayload);
+        // 5. Emit confirmation to sender
+        socket.emit("message_sent", messagePayload);
 
-console.log(`Message sent in conversation ${conversationId} by ${senderUsername}`);
+        // 6. Ensure each participant's sockets join the room + emit message directly
+        if (participants && participants.length > 0) {
+          participants.forEach(p => {
+            // Find all sockets of this participant using stored username
+            for (const [id, s] of io.sockets.sockets) {
+              // Use the username stored on socket object (set during auth)
+              if (s.username === p.username) {
+                // Join room if not yet
+                if (!s.rooms.has(roomName)) {
+                  s.join(roomName);
+                  console.log(`Auto-joined ${p.username} to room ${roomName}`);
+                }
+                // Emit new_message directly to ensure delivery
+                s.emit("new_message", messagePayload);
+                console.log(`Sent message directly to ${p.username}`);
+              }
+            }
+          });
+        }
+
+        // 7. Broadcast vào room (giữ nguyên để những ai đã trong room nhận)
+        io.to(roomName).emit("new_message", messagePayload);
+
+        console.log(`Message sent in conversation ${conversationId} by ${senderUsername}`);
       } catch (err) {
         console.error("send_message error:", err);
         socket.emit("error", { message: "Server error while sending message" });
@@ -240,7 +263,7 @@ console.log(`Message sent in conversation ${conversationId} by ${senderUsername}
 
     // Handle disconnect
     socket.on("disconnect", async (reason) => {
-      console.log("❌ WebSocket disconnected:", {
+      console.log("WebSocket disconnected:", {
         socketId: socket.id,
         username: currentUsername,
         reason,
@@ -266,9 +289,9 @@ console.log(`Message sent in conversation ${conversationId} by ${senderUsername}
             .eq("username", currentUsername);
           
           if (error) {
-            console.error("❌ Failed to update offline status:", error);
+            console.error("Failed to update offline status:", error);
           } else {
-            console.log(`✅ ${currentUsername} marked as offline`);
+            console.log(`${currentUsername} marked as offline`);
             
             // Notify others that user is offline
             socket.broadcast.emit("user_status", {
@@ -277,13 +300,13 @@ console.log(`Message sent in conversation ${conversationId} by ${senderUsername}
             });
           }
         } catch (err) {
-          console.error("❌ Error in disconnect handler:", err);
+          console.error("Error in disconnect handler:", err);
         }
       }
     });
   });
 
-  console.log("✅ WebSocket server initialized");
+  console.log("WebSocket server initialized");
   return io;
 }
 

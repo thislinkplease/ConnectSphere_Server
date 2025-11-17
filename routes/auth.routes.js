@@ -45,6 +45,22 @@ router.post('/signup', async (req, res) => {
 
     if (insErr) throw insErr;
 
+    // Create default hangout status for new user (visible by default)
+    try {
+      await supabase
+        .from('user_hangout_status')
+        .insert([{
+          username: inserted.username,
+          is_available: true, // Auto-enable visibility for new users
+          current_activity: null,
+          activities: []
+        }]);
+      console.log(`✅ Created default hangout status for ${inserted.username}`);
+    } catch (hangoutErr) {
+      // Non-critical - log but don't fail signup
+      console.error('Warning: Could not create hangout status:', hangoutErr);
+    }
+
     // Giả token (production: dùng JWT thực hoặc Supabase Auth)
     const fakeToken = Buffer.from(`${id}:${Date.now()}`).toString('base64');
 

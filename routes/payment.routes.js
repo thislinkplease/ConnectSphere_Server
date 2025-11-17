@@ -2,6 +2,9 @@ const express = require("express");
 const router = express.Router();
 const { supabase } = require("../db/supabaseClient");
 
+// Initialize Stripe with secret key from environment
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "");
+
 /* ---------------------------------- Helpers ---------------------------------- */
 
 async function getUserByUsername(username) {
@@ -59,6 +62,56 @@ router.get("/plans", async (req, res) => {
   } catch (err) {
     console.error("get plans error:", err);
     res.status(500).json({ message: "Server error while fetching payment plans." });
+  }
+});
+
+/* --------------------------- Stripe Payment Intent ---------------------------- */
+
+/**
+ * Create a Stripe payment intent
+ * POST /payments/create-payment-intent
+ * Body: { username, amount?: number }
+ */
+router.post("/create-payment-intent", async (req, res) => {
+  const { username, amount = 1 } = req.body;
+
+  if (!username) {
+    return res.status(400).json({ message: "Missing username." });
+  }
+
+  try {
+    // Verify user exists
+    const user = await getUserByUsername(username);
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    // Stripe requires amounts in cents, minimum is $0.50 (50 cents)
+    // We'll use 1 cent ($0.01) as the test price
+    const amountInCents = Math.max(1, Math.floor(amount * 100));
+
+    // Create a payment intent with Stripe
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountInCents,
+      currency: "usd",
+      automatic_payment_methods: {
+        enabled: true,
+      },
+      metadata: {
+        username,
+        plan_type: "pro",
+        test_mode: "true",
+      },
+    });
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+    });
+  } catch (err) {
+    console.error("create payment intent error:", err);
+    res.status(500).json({ 
+      message: "Server error while creating payment intent.",
+      error: err.message 
+    });
   }
 });
 
@@ -139,10 +192,10 @@ router.get("/subscription", async (req, res) => {
 /**
  * Subscribe to Pro plan (Test Payment)
  * POST /payments/subscribe
- * Body: { username, plan_type: 'pro', payment_method: 'test' }
+ * Body: { username, plan_type: 'pro', payment_method: 'test' | 'stripe', payment_intent_id?: string }
  */
 router.post("/subscribe", async (req, res) => {
-  const { username, plan_type, payment_method = "test" } = req.body;
+  const { username, plan_type, payment_method = "test", payment_intent_id } = req.body;
 
   if (!username || !plan_type) {
     return res.status(400).json({ message: "Missing username or plan_type." });
@@ -157,25 +210,72 @@ router.post("/subscribe", async (req, res) => {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ message: "User not found." });
 
+    // For Stripe payments, verify the payment intent was successful
+    if (payment_method === "stripe") {
+      if (!payment_intent_id) {
+        return res.status(400).json({ message: "Missing payment_intent_id for Stripe payment." });
+      }
+
+      try {
+        // Retrieve the payment intent from Stripe to verify it succeeded
+        const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
+        
+        if (paymentIntent.status !== "succeeded") {
+          return res.status(400).json({ 
+            message: "Payment not completed. Please complete the payment first.",
+            status: paymentIntent.status 
+          });
+        }
+
+        // Verify the payment intent hasn't been used before
+        const { data: existingTx, error: txCheckErr } = await supabase
+          .from("payment_transactions")
+          .select("*")
+          .eq("payment_intent_id", payment_intent_id)
+          .maybeSingle();
+
+        if (txCheckErr) throw txCheckErr;
+
+        if (existingTx) {
+          return res.status(400).json({ message: "This payment has already been used." });
+        }
+      } catch (stripeErr) {
+        console.error("Stripe verification error:", stripeErr);
+        return res.status(400).json({ 
+          message: "Failed to verify payment with Stripe.",
+          error: stripeErr.message 
+        });
+      }
+    }
+
     // Calculate subscription period (1 month from now)
     const startDate = new Date();
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + 1);
 
+    // Determine amount and currency based on payment method
+    const amount = payment_method === "stripe" ? 0.01 : 50000;
+    const currency = payment_method === "stripe" ? "USD" : "VND";
+
     // Create payment transaction
+    const transactionData = {
+      username,
+      amount,
+      currency,
+      plan_type: "pro",
+      status: "completed",
+      payment_method,
+      transaction_date: startDate.toISOString(),
+    };
+
+    // Add payment_intent_id if it's a Stripe payment
+    if (payment_method === "stripe" && payment_intent_id) {
+      transactionData.payment_intent_id = payment_intent_id;
+    }
+
     const { data: transaction, error: txErr } = await supabase
       .from("payment_transactions")
-      .insert([
-        {
-          username,
-          amount: 50000, // 50,000 VND
-          currency: "VND",
-          plan_type: "pro",
-          status: "completed", // Auto-complete for test payments
-          payment_method,
-          transaction_date: startDate.toISOString(),
-        },
-      ])
+      .insert([transactionData])
       .select("*")
       .single();
 
