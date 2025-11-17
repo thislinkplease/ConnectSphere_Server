@@ -6,8 +6,7 @@ yarn-error.log*
 
 # Env files
 .env
-*.env
-!.env.example
+
 
 # Logs
 logs/
