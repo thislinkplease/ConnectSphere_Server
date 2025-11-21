@@ -18,6 +18,20 @@ async function getPostById(postId) {
   return data || null;
 }
 
+async function enrichPostWithAuthor(post) {
+  const { data: authorData } = await supabase
+    .from("users")
+    .select("username, name, avatar")
+    .eq("username", post.author_username)
+    .single();
+
+  return {
+    ...post,
+    authorAvatar: authorData?.avatar || null,
+    authorDisplayName: authorData?.name || post.author_username,
+  };
+}
+
 async function updateLikeCount(postId) {
   const { count, error } = await supabase
     .from("post_likes")
@@ -29,6 +43,118 @@ async function updateLikeCount(postId) {
   if (upd.error) throw upd.error;
   return count || 0;
 }
+
+// ------------------------------- Get Posts Feed --------------------------------
+
+/**
+ * Get posts feed with author information
+ * GET /posts?limit=20&before=<ISO>
+ */
+router.get("/", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 20), 100);
+  const before = req.query.before ? new Date(req.query.before).toISOString() : null;
+
+  try {
+    let query = supabase
+      .from("posts")
+      .select(
+        "id, author_username, content, status, audience, disable_comments, hide_like_count, like_count, comment_count, community_id, created_at, updated_at"
+      )
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (before) {
+      query = query.lt("created_at", before);
+    }
+
+    const { data: posts, error: postsErr } = await query;
+    if (postsErr) throw postsErr;
+
+    if (!posts || posts.length === 0) {
+      return res.json([]);
+    }
+
+    const postIds = posts.map((p) => p.id);
+    const authorUsernames = [...new Set(posts.map((p) => p.author_username).filter(Boolean))];
+
+    // Fetch media
+    const { data: media, error: mediaErr } = await supabase
+      .from("post_media")
+      .select("id, post_id, media_url, media_type, position")
+      .in("post_id", postIds)
+      .order("position", { ascending: true });
+
+    if (mediaErr) throw mediaErr;
+
+    // Fetch authors
+    let users = [];
+    if (authorUsernames.length > 0) {
+      const { data: usersData, error: usersErr } = await supabase
+        .from("users")
+        .select("username, name, avatar")
+        .in("username", authorUsernames);
+
+      if (usersErr) throw usersErr;
+      users = usersData || [];
+    }
+
+    const userMap = new Map(users.map((u) => [u.username, u]));
+    const mediaMap = new Map();
+    (media || []).forEach((m) => {
+      const arr = mediaMap.get(m.post_id) || [];
+      arr.push(m);
+      mediaMap.set(m.post_id, arr);
+    });
+
+    const enriched = posts.map((p) => {
+      const author = userMap.get(p.author_username) || null;
+      return {
+        ...p,
+        post_media: mediaMap.get(p.id) || [],
+        authorAvatar: author ? author.avatar : null,
+        authorDisplayName: author ? author.name || author.username : p.author_username,
+      };
+    });
+
+    res.json(enriched);
+  } catch (err) {
+    console.error("get posts feed error:", err);
+    res.status(500).json({ message: "Server error while fetching posts." });
+  }
+});
+
+/**
+ * Get post by ID with author information
+ * GET /posts/:id?viewer=username
+ */
+router.get("/:id", async (req, res) => {
+  const postId = Number(req.params.id);
+  const viewer = req.query.viewer;
+
+  try {
+    const post = await getPostById(postId);
+    if (!post) return res.status(404).json({ message: "Post not found." });
+
+    const enrichedPost = await enrichPostWithAuthor(post);
+
+    // Check if viewer has liked this post
+    if (viewer) {
+      const { data: like } = await supabase
+        .from("post_likes")
+        .select("id")
+        .eq("post_id", postId)
+        .eq("username", viewer)
+        .limit(1);
+
+      enrichedPost.isLikedByViewer = !!(like && like.length > 0);
+    }
+
+    res.json(enrichedPost);
+  } catch (err) {
+    console.error("get post by id error:", err);
+    res.status(500).json({ message: "Server error while fetching post." });
+  }
+});
 
 // ----------------------- Upload media for a post -----------------------
 router.post("/:id/media", upload.array("media", 20), async (req, res) => {

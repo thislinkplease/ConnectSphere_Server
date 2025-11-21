@@ -261,6 +261,141 @@ function initializeWebSocket(httpServer, allowedOrigins) {
       }
     });
 
+    // ==================== Community Chat Events ====================
+    
+    // Join a community chat room
+    socket.on("join_community_chat", async ({ communityId }) => {
+      try {
+        const roomName = `community_chat_${communityId}`;
+        socket.join(roomName);
+        console.log(`Socket ${socket.id} (${currentUsername}) joined community chat ${communityId}`);
+        
+        // Notify others that user joined
+        if (currentUsername) {
+          socket.to(roomName).emit("user_joined_community_chat", {
+            communityId,
+            username: currentUsername,
+          });
+        }
+      } catch (err) {
+        console.error("join_community_chat error:", err);
+      }
+    });
+    
+    // Leave a community chat room
+    socket.on("leave_community_chat", ({ communityId }) => {
+      const roomName = `community_chat_${communityId}`;
+      socket.leave(roomName);
+      console.log(`Socket ${socket.id} left community chat ${communityId}`);
+      
+      // Notify others that user left
+      if (currentUsername) {
+        socket.to(roomName).emit("user_left_community_chat", {
+          communityId,
+          username: currentUsername,
+        });
+      }
+    });
+    
+    // Send a message in community chat
+    socket.on("send_community_message", async ({ communityId, senderUsername, content }) => {
+      try {
+        // 1. Verify user is member of community
+        const { data: membership } = await supabase
+          .from("community_members")
+          .select("username")
+          .eq("community_id", communityId)
+          .eq("username", senderUsername)
+          .limit(1);
+        
+        if (!membership || membership.length === 0) {
+          socket.emit("error", { message: "Not a member of this community" });
+          return;
+        }
+        
+        // 2. Get or create community conversation
+        let conversationId;
+        const { data: existingConv } = await supabase
+          .from("conversations")
+          .select("id")
+          .eq("community_id", communityId)
+          .single();
+        
+        if (existingConv) {
+          conversationId = existingConv.id;
+        } else {
+          // Create conversation for this community
+          const { data: newConv, error: convErr } = await supabase
+            .from("conversations")
+            .insert([{
+              type: "community",
+              community_id: communityId,
+              created_by: senderUsername,
+            }])
+            .select("id")
+            .single();
+          
+          if (convErr) throw convErr;
+          conversationId = newConv.id;
+        }
+        
+        // 3. Insert message
+        const { data: message, error } = await supabase
+          .from("messages")
+          .insert([{
+            conversation_id: conversationId,
+            sender_username: senderUsername,
+            message_type: "text",
+            content,
+          }])
+          .select(`
+            id,
+            conversation_id,
+            sender_username,
+            message_type,
+            content,
+            created_at,
+            sender:users!messages_sender_username_fkey(id, username, name, avatar, email, country, city, status, bio, age, gender, interests, is_online)
+          `)
+          .single();
+        
+        if (error) {
+          console.error("Error creating community message:", error);
+          socket.emit("error", { message: "Failed to send message" });
+          return;
+        }
+        
+        const roomName = `community_chat_${communityId}`;
+        
+        // 4. Build payload
+        const messagePayload = {
+          ...message,
+          communityId,
+          chatId: conversationId,
+          senderId: message.sender_username,
+          timestamp: message.created_at,
+        };
+        
+        // 5. Emit to room
+        io.to(roomName).emit("new_community_message", messagePayload);
+        
+        console.log(`Community message sent in ${communityId} by ${senderUsername}`);
+      } catch (err) {
+        console.error("send_community_message error:", err);
+        socket.emit("error", { message: "Server error while sending message" });
+      }
+    });
+    
+    // Community typing indicator
+    socket.on("community_typing", ({ communityId, username, isTyping }) => {
+      const roomName = `community_chat_${communityId}`;
+      // Broadcast to others in the room (not sender)
+      socket.to(roomName).emit("community_typing", {
+        communityId,
+        username,
+        isTyping,
+      });
+    });
     // Handle disconnect
     socket.on("disconnect", async (reason) => {
       console.log("WebSocket disconnected:", {
