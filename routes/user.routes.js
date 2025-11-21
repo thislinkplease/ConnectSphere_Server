@@ -6,6 +6,12 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 /* ---------------------------------- Helpers ---------------------------------- */
 
+function sanitizeUser(user) {
+  if (!user) return null;
+  const { password_hash, ...sanitized } = user;
+  return sanitized;
+}
+
 async function countFollowers(username) {
   const { count, error } = await supabase
     .from("user_follows")
@@ -55,13 +61,13 @@ async function updateFollowCounters({ followerUsername, followeeUsername }) {
 async function getUserById(id) {
   const { data, error } = await supabase.from("users").select("*").eq("id", id).single();
   if (error) throw error;
-  return data || null;
+  return sanitizeUser(data);
 }
 
 async function getUserByUsername(username) {
   const { data, error } = await supabase.from("users").select("*").eq("username", username).single();
   if (error) throw error;
-  return data || null;
+  return sanitizeUser(data);
 }
 
 /* ----------------------------- Profile Endpoints ----------------------------- */
@@ -577,6 +583,42 @@ router.get("/:username/following/:followerUsername", async (req, res) => {
   } catch (err) {
     console.error("check following error:", err);
     res.status(500).json({ message: "Server error while checking follow status." });
+  }
+});
+
+/**
+ * Check if two users mutually follow each other (for calling feature)
+ * GET /users/:username/mutual-follow/:otherUsername
+ * Returns: { isMutualFollow: boolean }
+ */
+router.get("/:username/mutual-follow/:otherUsername", async (req, res) => {
+  const user1 = req.params.username;
+  const user2 = req.params.otherUsername;
+
+  try {
+    // Check if user1 follows user2 AND user2 follows user1
+    const { data, error } = await supabase
+      .from("user_follows")
+      .select("follower_username, followee_username")
+      .or(`and(follower_username.eq.${user1},followee_username.eq.${user2}),and(follower_username.eq.${user2},followee_username.eq.${user1})`);
+
+    if (error) throw error;
+    
+    const user1FollowsUser2 = data?.some(
+      f => f.follower_username === user1 && f.followee_username === user2
+    );
+    const user2FollowsUser1 = data?.some(
+      f => f.follower_username === user2 && f.followee_username === user1
+    );
+    
+    res.json({ 
+      isMutualFollow: user1FollowsUser2 && user2FollowsUser1,
+      user1FollowsUser2,
+      user2FollowsUser1
+    });
+  } catch (err) {
+    console.error("check mutual follow error:", err);
+    res.status(500).json({ message: "Server error while checking mutual follow status." });
   }
 });
 

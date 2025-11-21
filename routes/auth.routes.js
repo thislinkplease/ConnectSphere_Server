@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../db/supabaseClient');
 const { randomUUID } = require('crypto');
+const bcrypt = require('bcryptjs');
 
 /**
  * POST /auth/signup
@@ -9,10 +10,15 @@ const { randomUUID } = require('crypto');
  * Mô phỏng: tạo user trong bảng users (chưa có mã hoá password thực)
  */
 router.post('/signup', async (req, res) => {
-  const { name, email, password, country, city } = req.body;
+  const { name, email, password, country, city, username: customUsername, gender } = req.body;
   if (!email || !password) return res.status(400).json({ message: 'Missing email or password' });
 
   try {
+    // Validate password length
+    if (password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
     // Kiểm tra email tồn tại
     const { data: exists, error: existsErr } = await supabase
       .from('users')
@@ -25,9 +31,12 @@ router.post('/signup', async (req, res) => {
       return res.status(409).json({ message: 'Email already registered' });
     }
 
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
+
     // Tạo id (nếu bạn đang tham chiếu auth.users thì phần này phải đổi sang id từ Supabase Auth)
     const id = randomUUID();
-    const username = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + Math.floor(Math.random() * 1000);
+    const username = customUsername || (email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + Math.floor(Math.random() * 1000));
 
     const { data: inserted, error: insErr } = await supabase
       .from('users')
@@ -38,6 +47,8 @@ router.post('/signup', async (req, res) => {
         name: name || username,
         country: country || null,
         city: city || null,
+        gender: gender || null,
+        password_hash: passwordHash,
         email_confirmed: false
       }])
       .select('*')
@@ -61,6 +72,9 @@ router.post('/signup', async (req, res) => {
       console.error('Warning: Could not create hangout status:', hangoutErr);
     }
 
+    // Remove password_hash from response
+    delete inserted.password_hash;
+
     // Giả token (production: dùng JWT thực hoặc Supabase Auth)
     const fakeToken = Buffer.from(`${id}:${Date.now()}`).toString('base64');
 
@@ -77,7 +91,7 @@ router.post('/signup', async (req, res) => {
 /**
  * POST /auth/login
  * Body: { email, password }
- * Giả lập: tìm user theo email và trả token giả
+ * Validates password hash and returns user + token
  */
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -97,6 +111,20 @@ router.post('/login', async (req, res) => {
       }
       throw error;
     }
+
+    // Check if user has password_hash (for users created before this update)
+    if (!user.password_hash) {
+      return res.status(401).json({ message: 'Invalid credentials. Please reset your password.' });
+    }
+
+    // Validate password
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // Remove password_hash from response
+    delete user.password_hash;
 
     // Giả token
     const fakeToken = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');

@@ -3,7 +3,7 @@ const multer = require("multer");
 const router = express.Router();
 const { supabase } = require("../db/supabaseClient");
 const upload = multer({ storage: multer.memoryStorage() });
-const MSG_BUCKET = "messages";
+const MSG_BUCKET = "chat-image";
 
 /* --------------------------------- Helpers --------------------------------- */
 
