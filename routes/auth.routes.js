@@ -2,42 +2,29 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../db/supabaseClient');
 const { randomUUID } = require('crypto');
-const bcrypt = require('bcryptjs');
 
 /**
+ * Đăng ký user mới (Sync from Supabase Auth)
  * POST /auth/signup
- * Body: { name, email, password, country?, city? }
- * Mô phỏng: tạo user trong bảng users (chưa có mã hoá password thực)
+ * Body: { id, email, name, country, city, username, gender }
  */
 router.post('/signup', async (req, res) => {
-  const { name, email, password, country, city, username: customUsername, gender } = req.body;
-  if (!email || !password) return res.status(400).json({ message: 'Missing email or password' });
+  console.log('📝 Received signup sync request:', req.body);
+  const { id, name, email, country, city, username: customUsername, gender } = req.body;
+
+  // We expect an ID from Supabase Auth
+  if (!id || !email) {
+    console.error('❌ Missing id or email in signup request');
+    return res.status(400).json({ message: 'Missing id or email' });
+  }
 
   try {
-    // Validate password length
-    if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
-    }
-
-    // Kiểm tra email tồn tại
-    const { data: exists, error: existsErr } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .limit(1);
-
-    if (existsErr) throw existsErr;
-    if (exists && exists.length > 0) {
-      return res.status(409).json({ message: 'Email already registered' });
-    }
-
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    // Tạo id (nếu bạn đang tham chiếu auth.users thì phần này phải đổi sang id từ Supabase Auth)
-    const id = randomUUID();
+    // Check if username exists (if provided)
+    // If not provided, generate one
     const username = customUsername || (email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + Math.floor(Math.random() * 1000));
+    console.log('👤 Processing signup for username:', username);
 
+    // Insert into public users table
     const { data: inserted, error: insErr } = await supabase
       .from('users')
       .insert([{
@@ -48,13 +35,19 @@ router.post('/signup', async (req, res) => {
         country: country || null,
         city: city || null,
         gender: gender || null,
-        password_hash: passwordHash,
         email_confirmed: false
       }])
       .select('*')
       .single();
 
-    if (insErr) throw insErr;
+    if (insErr) {
+      console.error('❌ Error inserting user into public table:', insErr);
+      // If duplicate username, we might want to retry with a new username if it was auto-generated
+      // But for now just throw
+      throw insErr;
+    }
+
+    console.log('✅ User inserted into public table:', inserted.id);
 
     // Create default hangout status for new user (visible by default)
     try {
@@ -72,71 +65,23 @@ router.post('/signup', async (req, res) => {
       console.error('Warning: Could not create hangout status:', hangoutErr);
     }
 
-    // Remove password_hash from response
-    delete inserted.password_hash;
-
-    // Giả token (production: dùng JWT thực hoặc Supabase Auth)
-    const fakeToken = Buffer.from(`${id}:${Date.now()}`).toString('base64');
-
+    // Return user
     res.json({
       user: inserted,
-      token: fakeToken
+      // No token needed here as client already has it from Supabase
     });
   } catch (err) {
-    console.error('Signup error:', err);
-    res.status(500).json({ message: 'Server error during signup' });
+    console.error('❌ Signup sync error:', err);
+    res.status(500).json({ message: 'Server error during signup sync', error: err.message });
   }
 });
 
 /**
+ * Đăng nhập (Deprecated - Client uses Supabase Auth directly)
  * POST /auth/login
- * Body: { email, password }
- * Validates password hash and returns user + token
  */
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ message: 'Missing email or password' });
-
-  try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email)
-      .limit(1)
-      .single();
-
-    if (error) {
-      if (String(error.message).toLowerCase().includes('row')) {
-        return res.status(401).json({ message: 'Invalid credentials' });
-      }
-      throw error;
-    }
-
-    // Check if user has password_hash (for users created before this update)
-    if (!user.password_hash) {
-      return res.status(401).json({ message: 'Invalid credentials. Please reset your password.' });
-    }
-
-    // Validate password
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    if (!isValidPassword) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    // Remove password_hash from response
-    delete user.password_hash;
-
-    // Giả token
-    const fakeToken = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');
-
-    res.json({
-      user,
-      token: fakeToken
-    });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ message: 'Server error during login' });
-  }
+  res.status(410).json({ message: 'This endpoint is deprecated. Use Supabase Auth on client.' });
 });
 
 /**

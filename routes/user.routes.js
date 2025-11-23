@@ -72,25 +72,15 @@ async function getUserByUsername(username) {
 
 /* ----------------------------- Profile Endpoints ----------------------------- */
 
+const { requireAuth } = require("../middleware/auth.middleware");
+
 /**
  * Get current user (requires authentication via token/header)
  * GET /users/me
- * For now, we'll use a simple auth header: Authorization: Bearer <token>
- * Token format: base64(userId:timestamp)
  */
-router.get("/me", async (req, res) => {
+router.get("/me", requireAuth, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Missing or invalid authorization header." });
-    }
-
-    const token = authHeader.substring(7); // Remove "Bearer "
-    const decoded = Buffer.from(token, "base64").toString("utf-8");
-    const userId = decoded.split(":")[0];
-
-    const user = await getUserById(userId);
-    if (!user) return res.status(404).json({ message: "User not found." });
+    const user = req.user; // Populated by middleware
 
     const [followers, following, posts] = await Promise.all([
       countFollowers(user.username),
@@ -198,7 +188,7 @@ router.get("/username/:username", async (req, res) => {
  */
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
-  const { 
+  const {
     name, gender, bio, avatar, background_image, username, status, age, date_of_birth,
     country, city, flag, interests, about_me, specialties,
     latitude, longitude, is_online
@@ -255,8 +245,8 @@ router.put("/:id", async (req, res) => {
 
     if (!data) {
       console.warn(`User profile update attempted for non-existent ID: ${id}`);
-      return res.status(404).json({ 
-        message: "User not found with the provided ID." 
+      return res.status(404).json({
+        message: "User not found with the provided ID."
       });
     }
 
@@ -603,15 +593,15 @@ router.get("/:username/mutual-follow/:otherUsername", async (req, res) => {
       .or(`and(follower_username.eq.${user1},followee_username.eq.${user2}),and(follower_username.eq.${user2},followee_username.eq.${user1})`);
 
     if (error) throw error;
-    
+
     const user1FollowsUser2 = data?.some(
       f => f.follower_username === user1 && f.followee_username === user2
     );
     const user2FollowsUser1 = data?.some(
       f => f.follower_username === user2 && f.followee_username === user1
     );
-    
-    res.json({ 
+
+    res.json({
       isMutualFollow: user1FollowsUser2 && user2FollowsUser1,
       user1FollowsUser2,
       user2FollowsUser1
@@ -801,7 +791,7 @@ router.post("/:userId/background-image", upload.single("background_image"), asyn
 
     // Generate unique filename
     const fileName = `${userId}-${Date.now()}.${file.mimetype.split('/')[1]}`;
-    
+
     // Upload to Supabase Storage
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from("background-images")
@@ -869,14 +859,14 @@ router.get("/:username/stats", async (req, res) => {
  */
 router.get("/:username/languages", async (req, res) => {
   const { username } = req.params;
-  
+
   try {
     const { data, error } = await supabase
       .from("user_languages")
       .select("*")
       .eq("username", username)
       .order("created_at", { ascending: true });
-    
+
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
@@ -893,16 +883,16 @@ router.get("/:username/languages", async (req, res) => {
 router.post("/:username/languages", async (req, res) => {
   const { username } = req.params;
   const { language, proficiency = "Intermediate" } = req.body;
-  
+
   if (!language) return res.status(400).json({ message: "Missing language." });
-  
+
   try {
     const { data, error } = await supabase
       .from("user_languages")
       .upsert([{ username, language, proficiency }])
       .select("*")
       .single();
-    
+
     if (error) throw error;
     res.json(data);
   } catch (err) {
@@ -918,14 +908,14 @@ router.post("/:username/languages", async (req, res) => {
 router.delete("/:username/languages/:languageId", async (req, res) => {
   const { username } = req.params;
   const languageId = Number(req.params.languageId);
-  
+
   try {
     const { error } = await supabase
       .from("user_languages")
       .delete()
       .eq("id", languageId)
       .eq("username", username);
-    
+
     if (error) throw error;
     res.json({ message: "Language deleted." });
   } catch (err) {
@@ -943,18 +933,18 @@ router.delete("/:username/languages/:languageId", async (req, res) => {
 router.get("/:username/countries", async (req, res) => {
   const { username } = req.params;
   const type = req.query.type; // 'lived' or 'visited'
-  
+
   try {
     let query = supabase
       .from("user_countries")
       .select("*")
       .eq("username", username)
       .order("created_at", { ascending: true });
-    
+
     if (type) {
       query = query.eq("country_type", type);
     }
-    
+
     const { data, error } = await query;
     if (error) throw error;
     res.json(data || []);
@@ -972,18 +962,18 @@ router.get("/:username/countries", async (req, res) => {
 router.post("/:username/countries", async (req, res) => {
   const { username } = req.params;
   const { country, country_type } = req.body;
-  
+
   if (!country || !country_type) {
     return res.status(400).json({ message: "Missing country or country_type." });
   }
-  
+
   try {
     const { data, error } = await supabase
       .from("user_countries")
       .upsert([{ username, country, country_type }])
       .select("*")
       .single();
-    
+
     if (error) throw error;
     res.json(data);
   } catch (err) {
@@ -999,14 +989,14 @@ router.post("/:username/countries", async (req, res) => {
 router.delete("/:username/countries/:countryId", async (req, res) => {
   const { username } = req.params;
   const countryId = Number(req.params.countryId);
-  
+
   try {
     const { error } = await supabase
       .from("user_countries")
       .delete()
       .eq("id", countryId)
       .eq("username", username);
-    
+
     if (error) throw error;
     res.json({ message: "Country deleted." });
   } catch (err) {
@@ -1023,14 +1013,14 @@ router.delete("/:username/countries/:countryId", async (req, res) => {
  */
 router.get("/:username/profile-completion", async (req, res) => {
   const { username } = req.params;
-  
+
   try {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ message: "User not found." });
-    
+
     let completion = 0;
     const checklist = [];
-    
+
     // Name (10%)
     if (user.name && user.name.trim()) {
       completion += 10;
@@ -1038,7 +1028,7 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Add name", completed: false });
     }
-    
+
     // Bio (10%)
     if (user.bio && user.bio.trim()) {
       completion += 10;
@@ -1046,7 +1036,7 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Add bio", completed: false });
     }
-    
+
     // About me (10%)
     if (user.about_me && user.about_me.trim()) {
       completion += 10;
@@ -1054,7 +1044,7 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Add about me", completed: false });
     }
-    
+
     // Avatar (15%)
     if (user.avatar && user.avatar.trim()) {
       completion += 15;
@@ -1062,7 +1052,7 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Upload photo", completed: false });
     }
-    
+
     // Email confirmed (15%)
     if (user.email_confirmed) {
       completion += 15;
@@ -1070,7 +1060,7 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Confirm email", completed: false });
     }
-    
+
     // Location (10%)
     if (user.country && user.city) {
       completion += 10;
@@ -1078,21 +1068,21 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Add location", completed: false });
     }
-    
+
     // Languages (10%)
     const { data: languages, error: langErr } = await supabase
       .from("user_languages")
       .select("id")
       .eq("username", username)
       .limit(1);
-    
+
     if (!langErr && languages && languages.length > 0) {
       completion += 10;
       checklist.push({ item: "Add languages", completed: true });
     } else {
       checklist.push({ item: "Add languages", completed: false });
     }
-    
+
     // Interests (10%)
     if (user.interests && Array.isArray(user.interests) && user.interests.length > 0) {
       completion += 10;
@@ -1100,27 +1090,27 @@ router.get("/:username/profile-completion", async (req, res) => {
     } else {
       checklist.push({ item: "Add interests", completed: false });
     }
-    
+
     // Countries visited/lived (10%)
     const { data: countries, error: countryErr } = await supabase
       .from("user_countries")
       .select("id")
       .eq("username", username)
       .limit(1);
-    
+
     if (!countryErr && countries && countries.length > 0) {
       completion += 10;
       checklist.push({ item: "Add countries", completed: true });
     } else {
       checklist.push({ item: "Add countries", completed: false });
     }
-    
+
     // Update the completion percentage in the database
     await supabase
       .from("users")
       .update({ profile_completion_percentage: completion })
       .eq("username", username);
-    
+
     res.json({
       username,
       completion_percentage: completion,
