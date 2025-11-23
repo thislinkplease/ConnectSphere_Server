@@ -70,6 +70,14 @@ async function getUserByUsername(username) {
   return sanitizeUser(data);
 }
 
+
+function cleanFileName(filename) {
+  return filename
+    .normalize("NFD")                 // remove accents
+    .replace(/[\u0300-\u036f]/g, "")  // remove Vietnamese tones
+    .replace(/[^\w.-]/g, "_");        // replace invalid chars
+}
+
 /* ----------------------------- Profile Endpoints ----------------------------- */
 
 const { requireAuth } = require("../middleware/auth.middleware");
@@ -702,8 +710,10 @@ router.post("/:userId/avatar", upload.single("avatar"), async (req, res) => {
     const user = await getUserById(userId);
     if (!user) return res.status(404).json({ message: "User not found." });
 
-    const fileName = `${user.username || userId}_${Date.now()}_${file.originalname}`;
+    const safeName = cleanFileName(file.originalname);
+    const fileName = `${cleanFileName(user.username || userId)}_${Date.now()}_${safeName}`;
     const filePath = `avatars/${fileName}`;
+
 
     // Upload to Storage
     const up = await supabase.storage
@@ -743,8 +753,10 @@ router.post("/upload-avatar", upload.single("avatar"), async (req, res) => {
     const user = await getUserById(userId);
     if (!user) return res.status(404).json({ message: "User not found." });
 
-    const fileName = `${user.username || userId}_${Date.now()}_${file.originalname}`;
+    const safeName = cleanFileName(file.originalname);
+    const fileName = `${cleanFileName(user.username || userId)}_${Date.now()}_${safeName}`;
     const filePath = `avatars/${fileName}`;
+
 
     // Upload to Storage
     const up = await supabase.storage
