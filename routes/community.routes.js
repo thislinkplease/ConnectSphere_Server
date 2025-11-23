@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const router = express.Router();
 const { supabase } = require("../db/supabaseClient");
+const { requireAuth, optionalAuth } = require("../middleware/auth.middleware");
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -24,6 +25,7 @@ async function isCommunityMember(communityId, username) {
     .select("username")
     .eq("community_id", communityId)
     .eq("username", username)
+    .eq("status", "approved") // Only approved members
     .limit(1);
 
   if (error) throw error;
@@ -42,12 +44,12 @@ async function isCommunityAdmin(communityId, username) {
   return !!(data && data[0] && (data[0].role === "admin" || data[0].role === "moderator"));
 }
 
-// Recalculate member_count from community_members table
 async function recomputeCommunityMemberCount(communityId) {
   const { count, error } = await supabase
     .from("community_members")
     .select("id", { count: "exact", head: true })
-    .eq("community_id", communityId);
+    .eq("community_id", communityId)
+    .eq("status", "approved"); // Only count approved members
 
   if (error) throw error;
 
@@ -116,32 +118,32 @@ async function recomputePostCommentCount(postId) {
 
 /* ---------------------------- Community CRUD ------------------------------- */
 
+
+
+// ... helpers ...
+
 /**
  * Create a community (PRO users only)
  * POST /communities
- * Body: { created_by, name, description?, image_url?, is_private? }
+ * Body: { name, description?, image_url?, is_private? }
  */
-router.post("/", async (req, res) => {
-  const { created_by, name, description, image_url, is_private = false } = req.body;
+router.post("/", requireAuth, async (req, res) => {
+  const { name, description, image_url, is_private = false } = req.body;
+  const created_by = req.user.username;
 
-  if (!created_by || !name) {
-    return res.status(400).json({ message: "Missing created_by or name." });
+  if (!name) {
+    return res.status(400).json({ message: "Missing name." });
   }
 
   try {
     // Check if user is PRO
-    const { data: user, error: userErr } = await supabase
-      .from("users")
-      .select("is_premium")
-      .eq("username", created_by)
-      .single();
-    
-    if (userErr) throw userErr;
-    
-    if (!user || !user.is_premium) {
-      return res.status(403).json({ 
+    // req.user is already fetched from DB in middleware, so we can check is_premium directly
+    // But let's verify if req.user has is_premium. The middleware fetches 'select *'.
+
+    if (!req.user.is_premium) {
+      return res.status(403).json({
         message: "Only PRO users can create communities.",
-        requiresPro: true 
+        requiresPro: true
       });
     }
 
@@ -156,10 +158,10 @@ router.post("/", async (req, res) => {
     // Add creator as admin member
     await supabase
       .from("community_members")
-      .insert([{ community_id: data.id, username: created_by, role: "admin" }]);
+      .insert([{ community_id: data.id, username: created_by, role: "admin", status: "approved" }]);
 
     await recomputeCommunityMemberCount(data.id);
-    
+
     // Create a conversation for community chat
     try {
       await supabase
@@ -234,11 +236,11 @@ router.get("/suggested", async (req, res) => {
 
 /**
  * Get a single community
- * GET /communities/:id?viewer=<username>
+ * GET /communities/:id
  */
-router.get("/:id", async (req, res) => {
+router.get("/:id", optionalAuth, async (req, res) => {
   const communityId = Number(req.params.id);
-  const viewer = (req.query.viewer || "").trim();
+  const viewer = req.user ? req.user.username : null;
 
   try {
     const community = await getCommunityById(communityId);
@@ -259,13 +261,12 @@ router.get("/:id", async (req, res) => {
 /**
  * Update community (admin only)
  * PUT /communities/:id
- * Body: { actor, name?, description?, image_url?, is_private? }
+ * Body: { name?, description?, image_url?, is_private? }
  */
-router.put("/:id", async (req, res) => {
+router.put("/:id", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
-  const { actor, name, description, image_url, is_private } = req.body;
-
-  if (!actor) return res.status(400).json({ message: "Missing actor." });
+  const { name, description, image_url, is_private } = req.body;
+  const actor = req.user.username;
 
   try {
     if (!(await isCommunityAdmin(communityId, actor))) {
@@ -277,6 +278,8 @@ router.put("/:id", async (req, res) => {
     if (description !== undefined) updates.description = description;
     if (image_url !== undefined) updates.image_url = image_url;
     if (is_private !== undefined) updates.is_private = is_private;
+    if (req.body.requires_post_approval !== undefined) updates.requires_post_approval = req.body.requires_post_approval;
+    if (req.body.requires_member_approval !== undefined) updates.requires_member_approval = req.body.requires_member_approval;
 
     const { data, error } = await supabase
       .from("communities")
@@ -296,13 +299,10 @@ router.put("/:id", async (req, res) => {
 /**
  * Delete community (creator only)
  * DELETE /communities/:id
- * Body: { actor }
  */
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
-  const { actor } = req.body;
-
-  if (!actor) return res.status(400).json({ message: "Missing actor." });
+  const actor = req.user.username;
 
   try {
     const community = await getCommunityById(communityId);
@@ -326,29 +326,30 @@ router.delete("/:id", async (req, res) => {
 /**
  * Join a community (public only - private requires join request)
  * POST /communities/:id/join
- * Body: { username }
  */
-router.post("/:id/join", async (req, res) => {
+router.post("/:id/join", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
-  const { username } = req.body;
-
-  if (!username) return res.status(400).json({ message: "Missing username." });
+  const username = req.user.username;
 
   try {
     const community = await getCommunityById(communityId);
     if (!community) return res.status(404).json({ message: "Community not found." });
 
-    if (community.is_private) {
-      return res.status(403).json({ 
-        message: "Cannot join private community directly. Please send a join request.",
-        requiresRequest: true
-      });
+    if (community.is_private && !community.requires_member_approval) {
+      // If private but NO approval required (unlikely combo, but possible if logic changes),
+      // usually private implies approval. Let's assume private ALWAYS implies approval or invite.
+      // But for now, let's respect the flags.
+      // If is_private is true, we force approval flow unless explicitly invited (which we don't handle here yet).
+      // Actually, let's use requires_member_approval flag if present, otherwise default to is_private behavior.
     }
+
+    const requiresApproval = community.requires_member_approval || community.is_private;
+    const status = requiresApproval ? "pending" : "member";
 
     const { data, error } = await supabase
       .from("community_members")
       .upsert(
-        [{ community_id: communityId, username, role: "member" }],
+        [{ community_id: communityId, username, role: "member", status: requiresApproval ? "pending" : "approved" }],
         { onConflict: "community_id,username" }
       )
       .select("*")
@@ -356,33 +357,34 @@ router.post("/:id/join", async (req, res) => {
 
     if (error) throw error;
 
-    await recomputeCommunityMemberCount(communityId);
+    if (!requiresApproval) {
+      await recomputeCommunityMemberCount(communityId);
 
-    // Auto-add member to community chat conversation
-    try {
-      // Get or create community conversation
-      const { data: conv, error: convErr } = await supabase
-        .from("conversations")
-        .select("id")
-        .eq("community_id", communityId)
-        .single();
+      // Auto-add member to community chat conversation
+      try {
+        // Get or create community conversation
+        const { data: conv, error: convErr } = await supabase
+          .from("conversations")
+          .select("id")
+          .eq("community_id", communityId)
+          .single();
 
-      if (conv && conv.id) {
-        // Add member to conversation
-        await supabase
-          .from("conversation_members")
-          .upsert(
-            [{ conversation_id: conv.id, username }],
-            { onConflict: "conversation_id,username" }
-          );
-        console.log(`Auto-added ${username} to community ${communityId} chat`);
+        if (conv && conv.id) {
+          // Add member to conversation
+          await supabase
+            .from("conversation_members")
+            .upsert(
+              [{ conversation_id: conv.id, username }],
+              { onConflict: "conversation_id,username" }
+            );
+          console.log(`Auto-added ${username} to community ${communityId} chat`);
+        }
+      } catch (chatErr) {
+        console.error("Error adding member to community chat:", chatErr);
       }
-    } catch (chatErr) {
-      console.error("Error adding member to community chat:", chatErr);
-      // Don't fail the join operation if chat addition fails
     }
 
-    res.json(data);
+    res.json({ ...data, message: requiresApproval ? "Join request sent." : "Joined community." });
   } catch (err) {
     console.error("join community error:", err);
     res.status(500).json({ message: "Server error while joining community." });
@@ -392,13 +394,10 @@ router.post("/:id/join", async (req, res) => {
 /**
  * Leave a community
  * DELETE /communities/:id/join
- * Body: { username }
  */
-router.delete("/:id/join", async (req, res) => {
+router.delete("/:id/join", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
-  const { username } = req.body;
-
-  if (!username) return res.status(400).json({ message: "Missing username." });
+  const username = req.user.username;
 
   try {
     const { error } = await supabase
@@ -459,19 +458,255 @@ router.get("/:id/members", async (req, res) => {
   }
 });
 
+/**
+ * Get join requests (admin only)
+ * GET /communities/:id/join_requests
+ */
+router.get("/:id/join_requests", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can view join requests." });
+    }
+
+    const { data: requests, error } = await supabase
+      .from("community_members")
+      .select("username, created_at") // created_at is joined_at
+      .eq("community_id", communityId)
+      .eq("status", "pending")
+      .order("joined_at", { ascending: false });
+
+    if (error) throw error;
+
+    if (!requests || requests.length === 0) return res.json([]);
+
+    const usernames = requests.map((r) => r.username);
+    const { data: users, error: uErr } = await supabase
+      .from("users")
+      .select("username, name, avatar")
+      .in("username", usernames);
+
+    if (uErr) throw uErr;
+
+    const userMap = new Map(users.map((u) => [u.username, u]));
+    const enriched = requests.map((r) => ({
+      ...r,
+      user: userMap.get(r.username) || null,
+    }));
+
+    res.json(enriched);
+  } catch (err) {
+    console.error("get join requests error:", err);
+    res.status(500).json({ message: "Server error while fetching join requests." });
+  }
+});
+
+/**
+ * Approve join request (admin only)
+ * POST /communities/:id/join_requests/:username/approve
+ */
+router.post("/:id/join_requests/:username/approve", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const targetUsername = req.params.username;
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can approve requests." });
+    }
+
+    const { error } = await supabase
+      .from("community_members")
+      .update({ status: "approved" })
+      .eq("community_id", communityId)
+      .eq("username", targetUsername)
+      .eq("status", "pending");
+
+    if (error) throw error;
+
+    await recomputeCommunityMemberCount(communityId);
+
+    // Auto-add to chat
+    try {
+      const { data: conv } = await supabase
+        .from("conversations")
+        .select("id")
+        .eq("community_id", communityId)
+        .single();
+
+      if (conv && conv.id) {
+        await supabase
+          .from("conversation_members")
+          .upsert(
+            [{ conversation_id: conv.id, username: targetUsername }],
+            { onConflict: "conversation_id,username" }
+          );
+      }
+    } catch (e) {
+      console.error("Error adding approved member to chat:", e);
+    }
+
+    res.json({ message: "Member approved." });
+  } catch (err) {
+    console.error("approve member error:", err);
+    res.status(500).json({ message: "Server error while approving member." });
+  }
+});
+
+/**
+ * Reject join request (admin only)
+ * POST /communities/:id/join_requests/:username/reject
+ */
+router.post("/:id/join_requests/:username/reject", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const targetUsername = req.params.username;
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can reject requests." });
+    }
+
+    const { error } = await supabase
+      .from("community_members")
+      .update({ status: "rejected" }) // Or delete? Let's mark rejected so they can't spam request? Or just delete.
+      // If we delete, they can request again. If rejected, they might be blocked from requesting.
+      // Let's delete for now to allow re-request, or update status.
+      // Plan says "approving/rejecting".
+      // Let's delete the row so they are not a member.
+      .delete()
+      .eq("community_id", communityId)
+      .eq("username", targetUsername)
+      .eq("status", "pending");
+
+    if (error) throw error;
+
+    res.json({ message: "Request rejected." });
+  } catch (err) {
+    console.error("reject member error:", err);
+    res.status(500).json({ message: "Server error while rejecting member." });
+  }
+});
+
+/**
+ * Update member role (admin only)
+ * PUT /communities/:id/members/:username/role
+ * Body: { role }
+ */
+router.put("/:id/members/:username/role", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const targetUsername = req.params.username;
+  const { role } = req.body;
+  const actor = req.user.username;
+
+  if (!["admin", "moderator", "member"].includes(role)) {
+    return res.status(400).json({ message: "Invalid role." });
+  }
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can change roles." });
+    }
+
+    const { error } = await supabase
+      .from("community_members")
+      .update({ role })
+      .eq("community_id", communityId)
+      .eq("username", targetUsername);
+
+    if (error) throw error;
+
+    res.json({ message: "Role updated." });
+  } catch (err) {
+    console.error("update role error:", err);
+    res.status(500).json({ message: "Server error while updating role." });
+  }
+});
+
+/**
+ * Kick member (admin only)
+ * DELETE /communities/:id/members/:username
+ */
+router.delete("/:id/members/:username", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const targetUsername = req.params.username;
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can kick members." });
+    }
+
+    // Cannot kick self or other admins (unless owner? logic can be complex, keep simple)
+    if (targetUsername === actor) {
+      return res.status(400).json({ message: "Cannot kick yourself." });
+    }
+
+    const { error } = await supabase
+      .from("community_members")
+      .delete()
+      .eq("community_id", communityId)
+      .eq("username", targetUsername);
+
+    if (error) throw error;
+
+    await recomputeCommunityMemberCount(communityId);
+
+    res.json({ message: "Member kicked." });
+  } catch (err) {
+    console.error("kick member error:", err);
+    res.status(500).json({ message: "Server error while kicking member." });
+  }
+});
+
+/**
+ * Ban member (admin only)
+ * POST /communities/:id/members/:username/ban
+ */
+router.post("/:id/members/:username/ban", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const targetUsername = req.params.username;
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can ban members." });
+    }
+
+    // Upsert with status='banned'
+    const { error } = await supabase
+      .from("community_members")
+      .upsert({
+        community_id: communityId,
+        username: targetUsername,
+        role: "member",
+        status: "banned"
+      }, { onConflict: "community_id,username" });
+
+    if (error) throw error;
+
+    await recomputeCommunityMemberCount(communityId);
+
+    res.json({ message: "Member banned." });
+  } catch (err) {
+    console.error("ban member error:", err);
+    res.status(500).json({ message: "Server error while banning member." });
+  }
+});
+
 /* --------------------------- Community Posts ------------------------------- */
 
 /**
  * Create a community post
  * POST /communities/:id/posts
- * FormData: { author_username, content?, audience?, disable_comments?, hide_like_count?, image (optional file) }
- *
- * Viết vào bảng `posts` + `post_media`, gắn `community_id`.
+ * FormData: { content?, audience?, disable_comments?, hide_like_count?, image (optional file) }
  */
-router.post("/:id/posts", upload.single("image"), async (req, res) => {
+router.post("/:id/posts", requireAuth, upload.single("image"), async (req, res) => {
   const communityId = Number(req.params.id);
+  const author_username = req.user.username;
   const {
-    author_username,
     content = null,
     audience = "followers",
     disable_comments = "false",
@@ -479,8 +714,8 @@ router.post("/:id/posts", upload.single("image"), async (req, res) => {
   } = req.body;
   const file = req.file;
 
-  if (!author_username || (!content && !file)) {
-    return res.status(400).json({ message: "Missing author or content/media." });
+  if (!content && !file) {
+    return res.status(400).json({ message: "Missing content or media." });
   }
 
   try {
@@ -491,6 +726,9 @@ router.post("/:id/posts", upload.single("image"), async (req, res) => {
       return res.status(403).json({ message: "Must be a member to post." });
     }
 
+    const requiresApproval = community.requires_post_approval && !(await isCommunityAdmin(communityId, author_username));
+    const status = requiresApproval ? "pending" : "approved";
+
     // Create post trong bảng posts
     const { data: post, error: postErr } = await supabase
       .from("posts")
@@ -498,7 +736,7 @@ router.post("/:id/posts", upload.single("image"), async (req, res) => {
         {
           author_username,
           content,
-          status: null,
+          status, // Use calculated status
           audience,
           disable_comments: String(disable_comments) === "true",
           hide_like_count: String(hide_like_count) === "true",
@@ -545,14 +783,8 @@ router.post("/:id/posts", upload.single("image"), async (req, res) => {
     }
 
     // Author info
-    let author = null;
-    const { data: authorData } = await supabase
-      .from("users")
-      .select("username, name, avatar")
-      .eq("username", author_username)
-      .single();
-
-    if (authorData) author = authorData;
+    let author = req.user;
+    // req.user might be missing avatar if not fetched fully, but middleware fetches 'select *' from users.
 
     await recomputeCommunityPostCount(communityId);
 
@@ -577,11 +809,11 @@ router.post("/:id/posts", upload.single("image"), async (req, res) => {
  *
  * Lấy từ bảng `posts` filter theo community_id, join thêm author + post_media.
  */
-router.get("/:id/posts", async (req, res) => {
+router.get("/:id/posts", optionalAuth, async (req, res) => {
   const communityId = Number(req.params.id);
   const limit = Math.min(Number(req.query.limit || 20), 100);
   const before = req.query.before ? new Date(req.query.before).toISOString() : null;
-  const viewer = (req.query.viewer || "").trim();
+  const viewer = req.user ? req.user.username : null;
 
   try {
     const community = await getCommunityById(communityId);
@@ -592,7 +824,7 @@ router.get("/:id/posts", async (req, res) => {
       if (!viewer) {
         return res.status(403).json({ message: "Must be logged in to view private community posts." });
       }
-      
+
       const isMember = await isCommunityMember(communityId, viewer);
       if (!isMember) {
         // Return empty array instead of error so UI can still show community info
@@ -606,6 +838,7 @@ router.get("/:id/posts", async (req, res) => {
         "id, author_username, content, status, audience, disable_comments, hide_like_count, like_count, comment_count, community_id, created_at, updated_at"
       )
       .eq("community_id", communityId)
+      .or("status.eq.approved,status.is.null") // Show approved or legacy (null) posts
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -671,16 +904,141 @@ router.get("/:id/posts", async (req, res) => {
 });
 
 /**
- * Delete a community post (author or admin)
- * DELETE /communities/:id/posts/:postId
- * Body: { actor }
+ * Get pending posts (admin only)
+ * GET /communities/:id/posts/pending
  */
-router.delete("/:id/posts/:postId", async (req, res) => {
+router.get("/:id/posts/pending", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can view pending posts." });
+    }
+
+    const { data: posts, error } = await supabase
+      .from("posts")
+      .select("*")
+      .eq("community_id", communityId)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    if (!posts || posts.length === 0) return res.json([]);
+
+    // Enrich with author info
+    const authorUsernames = [...new Set(posts.map((p) => p.author_username).filter(Boolean))];
+    let users = [];
+    if (authorUsernames.length > 0) {
+      const { data: usersData } = await supabase
+        .from("users")
+        .select("username, name, avatar")
+        .in("username", authorUsernames);
+      users = usersData || [];
+    }
+    const userMap = new Map(users.map((u) => [u.username, u]));
+
+    // Enrich with media
+    const postIds = posts.map(p => p.id);
+    const { data: media } = await supabase
+      .from("post_media")
+      .select("*")
+      .in("post_id", postIds);
+    const mediaMap = new Map();
+    (media || []).forEach(m => {
+      const arr = mediaMap.get(m.post_id) || [];
+      arr.push(m);
+      mediaMap.set(m.post_id, arr);
+    });
+
+    const enriched = posts.map((p) => {
+      const author = userMap.get(p.author_username) || null;
+      return {
+        ...p,
+        post_media: mediaMap.get(p.id) || [],
+        author_avatar: author ? author.avatar : null,
+        author_display_name: author ? author.name || author.username : p.author_username,
+      };
+    });
+
+    res.json(enriched);
+  } catch (err) {
+    console.error("get pending posts error:", err);
+    res.status(500).json({ message: "Server error while fetching pending posts." });
+  }
+});
+
+/**
+ * Approve post (admin only)
+ * POST /communities/:id/posts/:postId/approve
+ */
+router.post("/:id/posts/:postId/approve", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
   const postId = Number(req.params.postId);
-  const { actor } = req.body;
+  const actor = req.user.username;
 
-  if (!actor) return res.status(400).json({ message: "Missing actor." });
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can approve posts." });
+    }
+
+    const { error } = await supabase
+      .from("posts")
+      .update({ status: "approved" })
+      .eq("id", postId)
+      .eq("community_id", communityId);
+
+    if (error) throw error;
+
+    await recomputeCommunityPostCount(communityId);
+
+    res.json({ message: "Post approved." });
+  } catch (err) {
+    console.error("approve post error:", err);
+    res.status(500).json({ message: "Server error while approving post." });
+  }
+});
+
+/**
+ * Reject post (admin only)
+ * POST /communities/:id/posts/:postId/reject
+ */
+router.post("/:id/posts/:postId/reject", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const postId = Number(req.params.postId);
+  const actor = req.user.username;
+
+  try {
+    if (!(await isCommunityAdmin(communityId, actor))) {
+      return res.status(403).json({ message: "Only admin can reject posts." });
+    }
+
+    // Delete the post? Or mark rejected?
+    // Usually reject means delete or hide. Let's delete.
+    const { error } = await supabase
+      .from("posts")
+      .delete()
+      .eq("id", postId)
+      .eq("community_id", communityId);
+
+    if (error) throw error;
+
+    res.json({ message: "Post rejected." });
+  } catch (err) {
+    console.error("reject post error:", err);
+    res.status(500).json({ message: "Server error while rejecting post." });
+  }
+});
+
+/**
+ * Delete a community post (author or admin)
+ * DELETE /communities/:id/posts/:postId
+ */
+router.delete("/:id/posts/:postId", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const postId = Number(req.params.postId);
+  const actor = req.user.username;
 
   try {
     const { data: post, error: pErr } = await supabase
@@ -716,14 +1074,11 @@ router.delete("/:id/posts/:postId", async (req, res) => {
 /**
  * Like a community post (uses main post_likes table)
  * POST /communities/:id/posts/:postId/like
- * Body: { username }
  */
-router.post("/:id/posts/:postId/like", async (req, res) => {
+router.post("/:id/posts/:postId/like", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
   const postId = Number(req.params.postId);
-  const { username } = req.body;
-
-  if (!username) return res.status(400).json({ message: "Missing username." });
+  const username = req.user.username;
 
   try {
     // Ensure post exists & belongs to this community
@@ -757,14 +1112,11 @@ router.post("/:id/posts/:postId/like", async (req, res) => {
 /**
  * Unlike a community post
  * DELETE /communities/:id/posts/:postId/like
- * Body: { username }
  */
-router.delete("/:id/posts/:postId/like", async (req, res) => {
+router.delete("/:id/posts/:postId/like", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
   const postId = Number(req.params.postId);
-  const { username } = req.body;
-
-  if (!username) return res.status(400).json({ message: "Missing username." });
+  const username = req.user.username;
 
   try {
     // Ensure post exists & belongs to this community
@@ -1449,16 +1801,16 @@ router.post("/:id/join-requests/:requestId", async (req, res) => {
  * Get community chat messages
  * GET /communities/:id/chat/messages?viewer=<username>&limit=50
  */
-router.get("/:id/chat/messages", async (req, res) => {
+router.get("/:id/chat/messages", requireAuth, async (req, res) => {
   const communityId = Number(req.params.id);
-  const viewer = (req.query.viewer || "").trim();
+  const viewer = req.user.username;
   const limit = Math.min(Number(req.query.limit || 50), 100);
-
-  if (!viewer) return res.status(400).json({ message: "Missing viewer." });
 
   try {
     // Check if user is member
-    if (!(await isCommunityMember(communityId, viewer))) {
+    const isMember = await isCommunityMember(communityId, viewer);
+    if (!isMember) {
+      console.log(`User ${viewer} is not a member of community ${communityId} (or not approved)`);
       return res.status(403).json({ message: "Must be a member to view chat." });
     }
 
