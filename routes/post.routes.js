@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const router = express.Router();
 const { supabase } = require("../db/supabaseClient");
+const { requireAuth } = require("../middleware/auth.middleware");
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ----------------------------- Utilities & Helpers -----------------------------
@@ -32,15 +33,20 @@ async function enrichPostWithAuthor(post) {
   };
 }
 
-async function updateLikeCount(postId) {
+async function recomputePostLikeCount(postId) {
   const { count, error } = await supabase
     .from("post_likes")
     .select("id", { count: "exact", head: true })
     .eq("post_id", postId);
+
   if (error) throw error;
 
-  const upd = await supabase.from("posts").update({ like_count: count || 0 }).eq("id", postId);
-  if (upd.error) throw upd.error;
+  const { error: updErr } = await supabase
+    .from("posts")
+    .update({ like_count: count || 0 })
+    .eq("id", postId);
+
+  if (updErr) throw updErr;
   return count || 0;
 }
 
@@ -157,6 +163,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // ----------------------- Upload media for a post -----------------------
+
 router.post("/:id/media", upload.array("media", 20), async (req, res) => {
   try {
     const postId = Number(req.params.id);
@@ -214,6 +221,47 @@ router.post("/:id/media", upload.array("media", 20), async (req, res) => {
   } catch (err) {
     console.error("upload media error:", err);
     res.status(500).json({ message: "Failed to upload media." });
+  }
+});
+
+// ------------------------------- Delete single media from a post -------------------------------
+
+router.delete("/:id/media/:mediaId", async (req, res) => {
+  const postId = Number(req.params.id);
+  const mediaId = Number(req.params.mediaId);
+  const { author_username } = req.body;
+
+  if (!author_username) {
+    return res.status(400).json({ message: "Missing author_username." });
+  }
+
+  try {
+    // Check owner
+    const { data: post, error: postErr } = await supabase
+      .from("posts")
+      .select("author_username")
+      .eq("id", postId)
+      .single();
+
+    if (postErr || !post) return res.status(404).json({ message: "Post not found." });
+
+    if (post.author_username !== author_username) {
+      return res.status(403).json({ message: "Not allowed to delete this media." });
+    }
+
+    // Delete media row
+    const { error: delErr } = await supabase
+      .from("post_media")
+      .delete()
+      .eq("id", mediaId)
+      .eq("post_id", postId);
+
+    if (delErr) throw delErr;
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("delete media error:", err);
+    res.status(500).json({ message: "Failed to delete media." });
   }
 });
 
@@ -295,55 +343,115 @@ router.post("/", upload.array("media", 10), async (req, res) => {
   }
 });
 
-// ------------------------------- Like a post --------------------------------
+// ------------------------------- Update a post --------------------------------
+
+router.put("/:id", async (req, res) => {
+  const postId = Number(req.params.id);
+  const {
+    author_username,
+    content,
+    audience,
+    disable_comments,
+    hide_like_count,
+    community_id
+  } = req.body;
+
+  if (!author_username) {
+    return res.status(400).json({ message: "Missing author_username." });
+  }
+
+  try {
+    const { data: post, error } = await supabase
+      .from("posts")
+      .update({
+        content,
+        audience,
+        disable_comments,
+        hide_like_count,
+        community_id
+      })
+      .eq("id", postId)
+      .eq("author_username", author_username)
+      .select("*")
+      .single();
+
+    if (error) throw error;
+
+    res.json(post);
+  } catch (err) {
+    console.error("update post error:", err);
+    res.status(500).json({ message: "Failed to update post." });
+  }
+});
+
+// ------------------------------- Like/unlike a post --------------------------------
 
 /**
  * Like a post
  * POST /posts/:id/like
- * Body: { username }
  */
-router.post("/:id/like", async (req, res) => {
+router.post("/:id/like", requireAuth, async (req, res) => {
   const postId = Number(req.params.id);
-  const { username } = req.body;
-
-  if (!username) return res.status(400).json({ message: "Missing username." });
+  const username = req.user.username;
 
   try {
-    const ins = await supabase
-      .from("post_likes")
-      .insert([{ post_id: postId, username }])
-      .select("*")
+    const { data: post, error: pErr } = await supabase
+      .from("posts")
+      .select("id")
+      .eq("id", postId)
       .single();
 
-    if (ins.error && !isDuplicateKeyError(ins.error)) throw ins.error;
+    if (pErr || !post) {
+      return res.status(404).json({ message: "Post not found." });
+    }
 
-    const newCount = await updateLikeCount(postId);
-    res.json({ post_id: postId, liked_by: username, like_count: newCount, duplicated: !!ins.error });
+    const { error: insertErr } = await supabase
+      .from("post_likes")
+      .insert([{ post_id: postId, username }]);
+
+    if (insertErr && !String(insertErr.message).toLowerCase().includes("duplicate")) {
+      throw insertErr;
+    }
+
+    const likeCount = await recomputePostLikeCount(postId);
+
+    res.json({ post_id: postId, like_count: likeCount });
   } catch (err) {
     console.error("like post error:", err);
     res.status(500).json({ message: "Server error while liking post." });
   }
 });
 
-// ------------------------------- Unlike a post --------------------------------
-
 /**
  * Unlike a post
  * DELETE /posts/:id/like
- * Body: { username }
  */
-router.delete("/:id/like", async (req, res) => {
+router.delete("/:id/like", requireAuth, async (req, res) => {
   const postId = Number(req.params.id);
-  const { username } = req.body;
-
-  if (!username) return res.status(400).json({ message: "Missing username." });
+  const username = req.user.username;
 
   try {
-    const del = await supabase.from("post_likes").delete().eq("post_id", postId).eq("username", username);
-    if (del.error) throw del.error;
+    const { data: post, error: pErr } = await supabase
+      .from("posts")
+      .select("id")
+      .eq("id", postId)
+      .single();
 
-    const newCount = await updateLikeCount(postId);
-    res.json({ post_id: postId, unliked_by: username, like_count: newCount });
+    if (pErr || !post) {
+      return res.status(404).json({ message: "Post not found." });
+    }
+
+    const { error: delErr } = await supabase
+      .from("post_likes")
+      .delete()
+      .eq("post_id", postId)
+      .eq("username", username);
+
+    if (delErr) throw delErr;
+
+    const likeCount = await recomputePostLikeCount(postId);
+
+    res.json({ post_id: postId, like_count: likeCount });
   } catch (err) {
     console.error("unlike post error:", err);
     res.status(500).json({ message: "Server error while unliking post." });

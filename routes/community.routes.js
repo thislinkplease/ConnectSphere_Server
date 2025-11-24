@@ -118,10 +118,6 @@ async function recomputePostCommentCount(postId) {
 
 /* ---------------------------- Community CRUD ------------------------------- */
 
-
-
-// ... helpers ...
-
 /**
  * Create a community (PRO users only)
  * POST /communities
@@ -885,16 +881,32 @@ router.get("/:id/posts", optionalAuth, async (req, res) => {
       mediaMap.set(m.post_id, arr);
     });
 
-    const enriched = posts.map((p) => {
-      const author = userMap.get(p.author_username) || null;
-      return {
-        ...p,
-        community_name: community.name,
-        post_media: mediaMap.get(p.id) || [],
-        author_avatar: author ? author.avatar : null,
-        author_display_name: author ? author.name || author.username : p.author_username,
-      };
-    });
+    const enriched = await Promise.all(
+      posts.map(async (p) => {
+        const author = userMap.get(p.author_username) || null;
+
+        let isLikedByViewer = false;
+        if (viewer) {
+          const { data: liked } = await supabase
+            .from("post_likes")
+            .select("id")
+            .eq("post_id", p.id)
+            .eq("username", viewer)
+            .limit(1);
+
+          isLikedByViewer = !!(liked && liked.length > 0);
+        }
+
+        return {
+          ...p,
+          community_name: community.name,
+          post_media: mediaMap.get(p.id) || [],
+          author_avatar: author ? author.avatar : null,
+          author_display_name: author ? author.name || author.username : p.author_username,
+          isLikedByViewer,
+        };
+      })
+    );
 
     res.json(enriched);
   } catch (err) {
