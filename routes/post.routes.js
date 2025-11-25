@@ -287,17 +287,45 @@ router.post("/", upload.array("media", 10), async (req, res) => {
       return res.status(400).json({ message: "Missing author_username." });
     }
 
+    let finalStatus = status;
+
+    if (community_id) {
+      
+      const { data: memberRow } = await supabase
+        .from("community_members")
+        .select("role")
+        .eq("community_id", community_id)
+        .eq("username", author_username)
+        .single();
+
+      const role = memberRow?.role;
+
+      if (role === "admin" || role === "moderator") {
+        finalStatus = "approved";
+      } else {
+        const { data: c } = await supabase
+          .from("communities")
+          .select("requires_post_approval")
+          .eq("id", community_id)
+          .single();
+
+        finalStatus = c?.requires_post_approval ? "pending" : "approved";
+      }
+    }
+
     const { data: post, error: postErr } = await supabase
       .from("posts")
-      .insert([{
-        author_username,
-        content,
-        status,
-        audience,
-        disable_comments: String(disable_comments) === "true",
-        hide_like_count: String(hide_like_count) === "true",
-        community_id
-      }])
+      .insert([
+        {
+          author_username,
+          content,
+          status: finalStatus,
+          audience,
+          disable_comments: String(disable_comments) === "true",
+          hide_like_count: String(hide_like_count) === "true",
+          community_id
+        }
+      ])
       .select("*")
       .single();
 
@@ -308,12 +336,16 @@ router.post("/", upload.array("media", 10), async (req, res) => {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+
       const cleanName = file.originalname.replace(/[^\w.\-]+/g, "_");
       const storagePath = `posts/${post.id}/${Date.now()}_${i}_${cleanName}`;
 
       const uploadRes = await supabase.storage
         .from("posts")
-        .upload(storagePath, file.buffer, { contentType: file.mimetype, upsert: true });
+        .upload(storagePath, file.buffer, {
+          contentType: file.mimetype,
+          upsert: true,
+        });
 
       if (uploadRes.error) throw uploadRes.error;
 
@@ -322,14 +354,17 @@ router.post("/", upload.array("media", 10), async (req, res) => {
 
       const { data: pm, error: pmErr } = await supabase
         .from("post_media")
-        .insert([{
-          post_id: post.id,
-          media_url,
-          media_type: file.mimetype.startsWith("video") ? "video" : "image",
-          position: i,
-        }])
+        .insert([
+          {
+            post_id: post.id,
+            media_url,
+            media_type: file.mimetype.startsWith("video") ? "video" : "image",
+            position: i,
+          }
+        ])
         .select("*")
         .single();
+
       if (pmErr) throw pmErr;
 
       mediaRows.push(pm);
@@ -337,11 +372,13 @@ router.post("/", upload.array("media", 10), async (req, res) => {
 
     const full = await getPostById(post.id);
     res.status(201).json(full);
+
   } catch (err) {
     console.error("create post error:", err);
     res.status(500).json({ message: "Server error while creating post." });
   }
 });
+
 
 // ------------------------------- Update a post --------------------------------
 
