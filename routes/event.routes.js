@@ -163,6 +163,7 @@ router.post("/", async (req, res) => {
       has_pricing_menu = false,
       max_participants,
       image_url,
+      category,
    } = req.body;
 
    if (!hosted_by || !name || !address || !date_start || !date_end)
@@ -201,6 +202,7 @@ router.post("/", async (req, res) => {
                has_pricing_menu,
                max_participants,
                image_url,
+               category,
             },
          ])
          .select("*")
@@ -212,6 +214,65 @@ router.post("/", async (req, res) => {
       console.error("Create event error:", err);
       res.status(500).json({ message: "Failed to create event." });
    }
+});
+
+router.put("/:id", async (req, res) => {
+   const id = Number(req.params.id);
+   const username = req.body.username;
+   if (!username) {
+      return res.status(400).json({ message: "Missing username." });
+   }
+   const { date_start, date_end, address } = req.body;
+   try {
+      const { data: event, error: eventErr } = await supabase.from("events").select("hosted_by").eq("id", id).single();
+
+      if (eventErr || !event) {
+         return res.status(404).json({ message: "Event not found." });
+      }
+
+      if (event.hosted_by !== username) {
+         return res.status(403).json({ message: "Only the host can update this event." });
+      }
+
+      const updateData = {};
+
+      if (date_start) updateData.date_start = date_start;
+      if (date_end) updateData.date_end = date_end;
+      if (address) updateData.address = address;
+
+      if (Object.keys(updateData).length === 0) {
+         return res.status(400).json({ message: "No valid fields provided to update." });
+      }
+
+      // 4. Update event
+      const { data, error } = await supabase.from("events").update(updateData).eq("id", id).select("*").single();
+
+      if (error) throw error;
+
+      res.json(data);
+   } catch (err) {
+      console.error("Update event error:", err);
+      res.status(500).json({ message: "Failed to update event." });
+   }
+});
+
+router.delete("/:id", async (req, res) => {
+   const id = Number(req.params.id);
+   const username = req.query.username;
+
+   if (!username) return res.status(400).json({ message: "Missing username." });
+
+   const { data: event } = await supabase.from("events").select("hosted_by").eq("id", id).single();
+
+   if (!event) return res.status(404).json({ message: "Event not found" });
+
+   if (event.hosted_by !== username) {
+      return res.status(403).json({ message: "Only the host can delete this event." });
+   }
+
+   await supabase.from("events").delete().eq("id", id);
+
+   res.json({ message: "Event deleted." });
 });
 
 /* -------------------------------------------------------------------------- */
