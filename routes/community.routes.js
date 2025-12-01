@@ -468,7 +468,7 @@ router.get("/:id/members", async (req, res) => {
 });
 
 /**
- * Get join requests (admin only)
+ * Get join requests (admin or moderator)
  * GET /communities/:id/join_requests
  */
 router.get("/:id/join_requests", requireAuth, async (req, res) => {
@@ -513,7 +513,7 @@ router.get("/:id/join_requests", requireAuth, async (req, res) => {
 });
 
 /**
- * Approve join request (admin only)
+ * Approve join request (admin or moderator)
  * POST /communities/:id/join_requests/:username/approve
  */
 router.post("/:id/join_requests/:username/approve", requireAuth, async (req, res) => {
@@ -565,7 +565,7 @@ router.post("/:id/join_requests/:username/approve", requireAuth, async (req, res
 });
 
 /**
- * Reject join request (admin only)
+ * Reject join request (admin or moderator)
  * POST /communities/:id/join_requests/:username/reject
  */
 router.post("/:id/join_requests/:username/reject", requireAuth, async (req, res) => {
@@ -702,111 +702,6 @@ router.post("/:id/members/:username/ban", requireAuth, async (req, res) => {
 
 /* --------------------------- Community Posts ------------------------------- */
 
-// /**
-//  * Create a community post
-//  * POST /communities/:id/posts
-//  * FormData: { content?, audience?, disable_comments?, hide_like_count?, image (optional file) }
-//  */
-// router.post("/:id/posts", requireAuth, upload.single("image"), async (req, res) => {
-//   const communityId = Number(req.params.id);
-//   const author_username = req.user.username;
-//   const {
-//     content = null,
-//     audience = "followers",
-//     disable_comments = "false",
-//     hide_like_count = "false",
-//   } = req.body;
-//   const file = req.file;
-
-//   if (!content && !file) {
-//     return res.status(400).json({ message: "Missing content or media." });
-//   }
-
-//   try {
-//     const community = await getCommunityById(communityId);
-//     if (!community) return res.status(404).json({ message: "Community not found." });
-
-//     if (!(await isCommunityMember(communityId, author_username))) {
-//       return res.status(403).json({ message: "Must be a member to post." });
-//     }
-
-//     const requiresApproval = community.requires_post_approval && !(await isCommunityAdmin(communityId, author_username));
-//     const status = requiresApproval ? "pending" : "approved";
-
-//     // Create post trong bảng posts
-//     const { data: post, error: postErr } = await supabase
-//       .from("posts")
-//       .insert([
-//         {
-//           author_username,
-//           content,
-//           status, // Use calculated status
-//           audience,
-//           disable_comments: String(disable_comments) === "true",
-//           hide_like_count: String(hide_like_count) === "true",
-//           community_id: communityId,
-//         },
-//       ])
-//       .select("*")
-//       .single();
-
-//     if (postErr) throw postErr;
-
-//     let mediaRows = [];
-//     if (file) {
-//       const cleanName = file.originalname.replace(/[^\w.\-]+/g, "_");
-//       const storagePath = `posts/${post.id}/${Date.now()}_0_${cleanName}`;
-
-//       const uploadRes = await supabase.storage
-//         .from("posts")
-//         .upload(storagePath, file.buffer, {
-//           contentType: file.mimetype,
-//           upsert: true,
-//         });
-
-//       if (uploadRes.error) throw uploadRes.error;
-
-//       const { data: pub } = supabase.storage.from("posts").getPublicUrl(storagePath);
-//       const media_url = pub.publicUrl;
-
-//       const { data: pm, error: pmErr } = await supabase
-//         .from("post_media")
-//         .insert([
-//           {
-//             post_id: post.id,
-//             media_url,
-//             media_type: file.mimetype.startsWith("video") ? "video" : "image",
-//             position: 0,
-//           },
-//         ])
-//         .select("*")
-//         .single();
-
-//       if (pmErr) throw pmErr;
-//       mediaRows.push(pm);
-//     }
-
-//     // Author info
-//     let author = req.user;
-//     // req.user might be missing avatar if not fetched fully, but middleware fetches 'select *' from users.
-
-//     await recomputeCommunityPostCount(communityId);
-
-//     const response = {
-//       ...post,
-//       community_name: community.name,
-//       post_media: mediaRows,
-//       author_avatar: author ? author.avatar : null,
-//       author_display_name: author ? author.name || author.username : post.author_username,
-//     };
-
-//     res.status(201).json(response);
-//   } catch (err) {
-//     console.error("create community post error:", err);
-//     res.status(500).json({ message: "Server error while creating post." });
-//   }
-// });
-
 /**
  * Get community posts
  * GET /communities/:id/posts?limit=20&before=<ISO>
@@ -924,7 +819,7 @@ router.get("/:id/posts", optionalAuth, async (req, res) => {
 });
 
 /**
- * Get pending posts (admin only)
+ * Get pending posts (admin or moderator)
  * GET /communities/:id/posts/pending
  */
 router.get("/:id/posts/pending", requireAuth, async (req, res) => {
@@ -990,7 +885,7 @@ router.get("/:id/posts/pending", requireAuth, async (req, res) => {
 });
 
 /**
- * Approve post (admin only)
+ * Approve post (admin or moderator)
  * POST /communities/:id/posts/:postId/approve
  */
 router.post("/:id/posts/:postId/approve", requireAuth, async (req, res) => {
@@ -1021,7 +916,7 @@ router.post("/:id/posts/:postId/approve", requireAuth, async (req, res) => {
 });
 
 /**
- * Reject post (admin only)
+ * Reject post (moderator or admin)
  * POST /communities/:id/posts/:postId/reject
  */
 router.post("/:id/posts/:postId/reject", requireAuth, async (req, res) => {
@@ -1052,7 +947,7 @@ router.post("/:id/posts/:postId/reject", requireAuth, async (req, res) => {
 });
 
 /**
- * Delete a community post (author or admin)
+ * Delete a community post (moderator or admin)
  * DELETE /communities/:id/posts/:postId
  */
 router.delete("/:id/posts/:postId", requireAuth, async (req, res) => {
@@ -1089,84 +984,6 @@ router.delete("/:id/posts/:postId", requireAuth, async (req, res) => {
   }
 });
 
-
-/* ------------------------- Community Post Likes ---------------------------- */
-
-// /**
-//  * Like a community post (uses main post_likes table)
-//  * POST /communities/:id/posts/:postId/like
-//  */
-// router.post("/:id/posts/:postId/like", requireAuth, async (req, res) => {
-//   const communityId = Number(req.params.id);
-//   const postId = Number(req.params.postId);
-//   const username = req.user.username;
-
-//   try {
-//     // Ensure post exists & belongs to this community
-//     const { data: post, error: pErr } = await supabase
-//       .from("posts")
-//       .select("id, community_id")
-//       .eq("id", postId)
-//       .single();
-
-//     if (pErr || !post || post.community_id !== communityId) {
-//       return res.status(404).json({ message: "Post not found in this community." });
-//     }
-
-//     const { error: insertErr } = await supabase
-//       .from("post_likes")
-//       .insert([{ post_id: postId, username }]);
-
-//     if (insertErr && !String(insertErr.message).toLowerCase().includes("duplicate")) {
-//       throw insertErr;
-//     }
-
-//     const likeCount = await recomputePostLikeCount(postId);
-
-//     res.json({ post_id: postId, like_count: likeCount });
-//   } catch (err) {
-//     console.error("like community post error:", err);
-//     res.status(500).json({ message: "Server error while liking post." });
-//   }
-// });
-
-// /**
-//  * Unlike a community post
-//  * DELETE /communities/:id/posts/:postId/like
-//  */
-// router.delete("/:id/posts/:postId/like", requireAuth, async (req, res) => {
-//   const communityId = Number(req.params.id);
-//   const postId = Number(req.params.postId);
-//   const username = req.user.username;
-
-//   try {
-//     // Ensure post exists & belongs to this community
-//     const { data: post, error: pErr } = await supabase
-//       .from("posts")
-//       .select("id, community_id")
-//       .eq("id", postId)
-//       .single();
-
-//     if (pErr || !post || post.community_id !== communityId) {
-//       return res.status(404).json({ message: "Post not found in this community." });
-//     }
-
-//     const { error: delErr } = await supabase
-//       .from("post_likes")
-//       .delete()
-//       .eq("post_id", postId)
-//       .eq("username", username);
-
-//     if (delErr) throw delErr;
-
-//     const likeCount = await recomputePostLikeCount(postId);
-
-//     res.json({ post_id: postId, like_count: likeCount });
-//   } catch (err) {
-//     console.error("unlike community post error:", err);
-//     res.status(500).json({ message: "Server error while unliking post." });
-//   }
-// });
 
 /* ----------------------- Community Post Comments --------------------------- */
 
