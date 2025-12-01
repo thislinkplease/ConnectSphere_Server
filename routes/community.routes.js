@@ -243,11 +243,24 @@ router.get("/:id", optionalAuth, async (req, res) => {
     if (!community) return res.status(404).json({ message: "Community not found." });
 
     let isMember = false;
+    let membershipStatus = null; // null = not a member, 'pending' = waiting approval, 'approved' = member
+    
     if (viewer) {
-      isMember = await isCommunityMember(communityId, viewer);
+      // Check membership status including pending
+      const { data: memberData, error: memberError } = await supabase
+        .from("community_members")
+        .select("status, role")
+        .eq("community_id", communityId)
+        .eq("username", viewer)
+        .limit(1);
+
+      if (!memberError && memberData && memberData.length > 0) {
+        membershipStatus = memberData[0].status;
+        isMember = memberData[0].status === 'approved';
+      }
     }
 
-    res.json({ ...community, is_member: isMember });
+    res.json({ ...community, is_member: isMember, membership_status: membershipStatus });
   } catch (err) {
     console.error("get community error:", err);
     res.status(500).json({ message: "Server error while fetching community." });
@@ -1800,6 +1813,463 @@ router.post("/:id/join-requests/:requestId", async (req, res) => {
   } catch (err) {
     console.error("review join request error:", err);
     res.status(500).json({ message: "Server error while reviewing join request." });
+  }
+});
+
+/* ------------------------- Community Events -------------------------------- */
+
+/**
+ * Get events for a community
+ * GET /communities/:id/events?viewer=<username>
+ */
+router.get("/:id/events", optionalAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const viewer = req.user ? req.user.username : null;
+
+  try {
+    const community = await getCommunityById(communityId);
+    if (!community) return res.status(404).json({ message: "Community not found." });
+
+    // Get events for this community
+    const { data: events, error } = await supabase
+      .from("community_events")
+      .select("*")
+      .eq("community_id", communityId)
+      .order("start_time", { ascending: true });
+
+    if (error) throw error;
+
+    if (!events || events.length === 0) return res.json([]);
+
+    // Get participant counts for each event
+    const eventIds = events.map(e => e.id);
+    const { data: participants, error: pErr } = await supabase
+      .from("community_event_participants")
+      .select("event_id, username, status")
+      .in("event_id", eventIds);
+
+    if (pErr) throw pErr;
+
+    // Get creator info
+    const creatorUsernames = [...new Set(events.map(e => e.created_by).filter(Boolean))];
+    let creatorsMap = new Map();
+    if (creatorUsernames.length > 0) {
+      const { data: creators, error: cErr } = await supabase
+        .from("users")
+        .select("username, name, avatar")
+        .in("username", creatorUsernames);
+      if (!cErr && creators) {
+        creatorsMap = new Map(creators.map(c => [c.username, c]));
+      }
+    }
+
+    // Enrich events with participant counts and viewer status
+    const enriched = events.map(event => {
+      const eventParticipants = (participants || []).filter(p => p.event_id === event.id);
+      const goingCount = eventParticipants.filter(p => p.status === 'going').length;
+      const interestedCount = eventParticipants.filter(p => p.status === 'interested').length;
+      
+      let isGoing = false;
+      let isInterested = false;
+      if (viewer) {
+        const viewerParticipation = eventParticipants.find(p => p.username === viewer);
+        if (viewerParticipation) {
+          isGoing = viewerParticipation.status === 'going';
+          isInterested = viewerParticipation.status === 'interested';
+        }
+      }
+
+      const creator = creatorsMap.get(event.created_by);
+
+      return {
+        ...event,
+        participant_count: goingCount + interestedCount,
+        going_count: goingCount,
+        interested_count: interestedCount,
+        is_going: isGoing,
+        is_interested: isInterested,
+        creator: creator || { username: event.created_by },
+      };
+    });
+
+    res.json(enriched);
+  } catch (err) {
+    console.error("get community events error:", err);
+    res.status(500).json({ message: "Server error while fetching community events." });
+  }
+});
+
+/**
+ * Get a specific event from a community
+ * GET /communities/:id/events/:eventId?viewer=<username>
+ */
+router.get("/:id/events/:eventId", optionalAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const eventId = Number(req.params.eventId);
+  const viewer = req.user ? req.user.username : null;
+
+  try {
+    // Get the event
+    const { data: event, error } = await supabase
+      .from("community_events")
+      .select("*")
+      .eq("id", eventId)
+      .eq("community_id", communityId)
+      .single();
+
+    if (error || !event) {
+      return res.status(404).json({ message: "Event not found." });
+    }
+
+    // Get participants
+    const { data: participants, error: pErr } = await supabase
+      .from("community_event_participants")
+      .select("*")
+      .eq("event_id", eventId);
+
+    if (pErr) throw pErr;
+
+    const goingCount = (participants || []).filter(p => p.status === 'going').length;
+    const interestedCount = (participants || []).filter(p => p.status === 'interested').length;
+
+    let isGoing = false;
+    let isInterested = false;
+    if (viewer) {
+      const viewerParticipation = (participants || []).find(p => p.username === viewer);
+      if (viewerParticipation) {
+        isGoing = viewerParticipation.status === 'going';
+        isInterested = viewerParticipation.status === 'interested';
+      }
+    }
+
+    // Get creator info
+    let creator = null;
+    if (event.created_by) {
+      const { data: creatorData } = await supabase
+        .from("users")
+        .select("username, name, avatar")
+        .eq("username", event.created_by)
+        .single();
+      creator = creatorData;
+    }
+
+    res.json({
+      ...event,
+      participant_count: goingCount + interestedCount,
+      going_count: goingCount,
+      interested_count: interestedCount,
+      is_going: isGoing,
+      is_interested: isInterested,
+      creator: creator || { username: event.created_by },
+    });
+  } catch (err) {
+    console.error("get community event error:", err);
+    res.status(500).json({ message: "Server error while fetching event." });
+  }
+});
+
+/**
+ * Create a community event (members only)
+ * POST /communities/:id/events
+ * FormData: { name, description?, location?, start_time, end_time?, image? }
+ */
+router.post("/:id/events", requireAuth, upload.single("image"), async (req, res) => {
+  const communityId = Number(req.params.id);
+  const creator = req.user.username;
+  const { name, description, location, start_time, end_time } = req.body;
+  const file = req.file;
+
+  if (!name || !start_time) {
+    return res.status(400).json({ message: "Missing name or start_time." });
+  }
+
+  try {
+    const community = await getCommunityById(communityId);
+    if (!community) return res.status(404).json({ message: "Community not found." });
+
+    // Check if user is a member
+    if (!(await isCommunityMember(communityId, creator))) {
+      return res.status(403).json({ message: "Must be a member to create events." });
+    }
+
+    let image_url = null;
+    if (file) {
+      const cleanName = file.originalname.replace(/[^\w.\-]+/g, "_");
+      const storagePath = `community_events/${communityId}/${Date.now()}_${cleanName}`;
+
+      const uploadRes = await supabase.storage
+        .from("posts")
+        .upload(storagePath, file.buffer, {
+          contentType: file.mimetype,
+          upsert: true,
+        });
+
+      if (uploadRes.error) throw uploadRes.error;
+
+      const { data: pub } = supabase.storage.from("posts").getPublicUrl(storagePath);
+      image_url = pub.publicUrl;
+    }
+
+    // Create the event
+    const { data: event, error } = await supabase
+      .from("community_events")
+      .insert([{
+        community_id: communityId,
+        created_by: creator,
+        name,
+        description: description || null,
+        location: location || null,
+        start_time,
+        end_time: end_time || null,
+        image_url,
+      }])
+      .select("*")
+      .single();
+
+    if (error) throw error;
+
+    // Get creator info
+    const { data: creatorData } = await supabase
+      .from("users")
+      .select("username, name, avatar")
+      .eq("username", creator)
+      .single();
+
+    res.status(201).json({
+      ...event,
+      participant_count: 0,
+      going_count: 0,
+      interested_count: 0,
+      is_going: false,
+      is_interested: false,
+      creator: creatorData || { username: creator },
+    });
+  } catch (err) {
+    console.error("create community event error:", err);
+    res.status(500).json({ message: "Server error while creating event." });
+  }
+});
+
+/**
+ * Update a community event (creator or admin only)
+ * PUT /communities/:id/events/:eventId
+ * Body: { name?, description?, location?, start_time?, end_time? }
+ */
+router.put("/:id/events/:eventId", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const eventId = Number(req.params.eventId);
+  const actor = req.user.username;
+  const { name, description, location, start_time, end_time } = req.body;
+
+  try {
+    // Get the event
+    const { data: event, error: eErr } = await supabase
+      .from("community_events")
+      .select("*")
+      .eq("id", eventId)
+      .eq("community_id", communityId)
+      .single();
+
+    if (eErr || !event) {
+      return res.status(404).json({ message: "Event not found." });
+    }
+
+    // Check permissions - creator or admin
+    const isAdmin = await isCommunityAdmin(communityId, actor);
+    if (event.created_by !== actor && !isAdmin) {
+      return res.status(403).json({ message: "Not allowed to update this event." });
+    }
+
+    // Build updates object
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (location !== undefined) updates.location = location;
+    if (start_time !== undefined) updates.start_time = start_time;
+    if (end_time !== undefined) updates.end_time = end_time;
+    updates.updated_at = new Date().toISOString();
+
+    const { data: updated, error: updErr } = await supabase
+      .from("community_events")
+      .update(updates)
+      .eq("id", eventId)
+      .select("*")
+      .single();
+
+    if (updErr) throw updErr;
+
+    res.json(updated);
+  } catch (err) {
+    console.error("update community event error:", err);
+    res.status(500).json({ message: "Server error while updating event." });
+  }
+});
+
+/**
+ * Delete a community event (creator or admin only)
+ * DELETE /communities/:id/events/:eventId
+ */
+router.delete("/:id/events/:eventId", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const eventId = Number(req.params.eventId);
+  const actor = req.user.username;
+
+  try {
+    // Get the event
+    const { data: event, error: eErr } = await supabase
+      .from("community_events")
+      .select("*")
+      .eq("id", eventId)
+      .eq("community_id", communityId)
+      .single();
+
+    if (eErr || !event) {
+      return res.status(404).json({ message: "Event not found." });
+    }
+
+    // Check permissions - creator or admin
+    const isAdmin = await isCommunityAdmin(communityId, actor);
+    if (event.created_by !== actor && !isAdmin) {
+      return res.status(403).json({ message: "Not allowed to delete this event." });
+    }
+
+    // Delete participants first
+    await supabase
+      .from("community_event_participants")
+      .delete()
+      .eq("event_id", eventId);
+
+    // Delete the event
+    const { error: delErr } = await supabase
+      .from("community_events")
+      .delete()
+      .eq("id", eventId);
+
+    if (delErr) throw delErr;
+
+    res.json({ message: "Event deleted." });
+  } catch (err) {
+    console.error("delete community event error:", err);
+    res.status(500).json({ message: "Server error while deleting event." });
+  }
+});
+
+/**
+ * Respond to a community event (going/interested/not_going)
+ * POST /communities/:id/events/:eventId/respond
+ * Body: { status: 'going' | 'interested' | 'not_going' }
+ */
+router.post("/:id/events/:eventId/respond", requireAuth, async (req, res) => {
+  const communityId = Number(req.params.id);
+  const eventId = Number(req.params.eventId);
+  const username = req.user.username;
+  const { status } = req.body;
+
+  if (!status || !['going', 'interested', 'not_going'].includes(status)) {
+    return res.status(400).json({ message: "Invalid status. Use 'going', 'interested', or 'not_going'." });
+  }
+
+  try {
+    // Check if user is a member
+    if (!(await isCommunityMember(communityId, username))) {
+      return res.status(403).json({ message: "Must be a member to respond to events." });
+    }
+
+    // Check event exists
+    const { data: event, error: eErr } = await supabase
+      .from("community_events")
+      .select("id")
+      .eq("id", eventId)
+      .eq("community_id", communityId)
+      .single();
+
+    if (eErr || !event) {
+      return res.status(404).json({ message: "Event not found." });
+    }
+
+    if (status === 'not_going') {
+      // Remove participation
+      await supabase
+        .from("community_event_participants")
+        .delete()
+        .eq("event_id", eventId)
+        .eq("username", username);
+      
+      return res.json({ message: "Response removed.", status: null });
+    }
+
+    // Upsert participation
+    const { data, error } = await supabase
+      .from("community_event_participants")
+      .upsert([{ event_id: eventId, username, status }], { onConflict: "event_id,username" })
+      .select("*")
+      .single();
+
+    if (error) throw error;
+
+    res.json({ message: `Marked as ${status}.`, ...data });
+  } catch (err) {
+    console.error("respond to event error:", err);
+    res.status(500).json({ message: "Server error while responding to event." });
+  }
+});
+
+/**
+ * Get participants for a community event
+ * GET /communities/:id/events/:eventId/participants?status=going|interested
+ */
+router.get("/:id/events/:eventId/participants", async (req, res) => {
+  const communityId = Number(req.params.id);
+  const eventId = Number(req.params.eventId);
+  const filterStatus = req.query.status;
+
+  try {
+    // Check event exists
+    const { data: event, error: eErr } = await supabase
+      .from("community_events")
+      .select("id")
+      .eq("id", eventId)
+      .eq("community_id", communityId)
+      .single();
+
+    if (eErr || !event) {
+      return res.status(404).json({ message: "Event not found." });
+    }
+
+    // Get participants
+    let query = supabase
+      .from("community_event_participants")
+      .select("*")
+      .eq("event_id", eventId);
+
+    if (filterStatus && ['going', 'interested'].includes(filterStatus)) {
+      query = query.eq("status", filterStatus);
+    }
+
+    const { data: participants, error } = await query.order("created_at", { ascending: false });
+    if (error) throw error;
+
+    if (!participants || participants.length === 0) return res.json([]);
+
+    // Enrich with user info
+    const usernames = participants.map(p => p.username);
+    const { data: users, error: uErr } = await supabase
+      .from("users")
+      .select("username, name, avatar")
+      .in("username", usernames);
+
+    if (uErr) throw uErr;
+
+    const userMap = new Map((users || []).map(u => [u.username, u]));
+    const enriched = participants.map(p => ({
+      ...p,
+      user: userMap.get(p.username) || null,
+    }));
+
+    res.json(enriched);
+  } catch (err) {
+    console.error("get event participants error:", err);
+    res.status(500).json({ message: "Server error while fetching participants." });
   }
 });
 

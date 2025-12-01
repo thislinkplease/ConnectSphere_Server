@@ -309,6 +309,7 @@ function initializeWebSocket(httpServer, allowedOrigins) {
           .select("username")
           .eq("community_id", communityId)
           .eq("username", senderUsername)
+          .eq("status", "approved")
           .limit(1);
 
         if (!membership || membership.length === 0) {
@@ -374,13 +375,35 @@ function initializeWebSocket(httpServer, allowedOrigins) {
         const messagePayload = {
           ...message,
           communityId,
+          community_id: communityId,
           chatId: conversationId,
           senderId: message.sender_username,
           timestamp: message.created_at,
         };
 
-        // 5. Emit to room
+        // 5. Emit to community chat room
         io.to(roomName).emit("new_community_message", messagePayload);
+
+        // 6. Also emit to all community members' sockets for inbox real-time update
+        // This ensures the inbox updates even if user is not in the community chat screen
+        const { data: allMembers } = await supabase
+          .from("community_members")
+          .select("username")
+          .eq("community_id", communityId)
+          .eq("status", "approved");
+
+        if (allMembers && allMembers.length > 0) {
+          allMembers.forEach(member => {
+            // Find all sockets of this member
+            for (const [id, s] of io.sockets.sockets) {
+              if (s.username === member.username) {
+                // Emit new_community_message to ensure inbox updates
+                s.emit("new_community_message", messagePayload);
+                console.log(`Sent community message notification to ${member.username} for inbox update`);
+              }
+            }
+          });
+        }
 
         console.log(`Community message sent in ${communityId} by ${senderUsername}`);
       } catch (err) {
