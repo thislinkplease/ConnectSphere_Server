@@ -197,10 +197,10 @@ router.get("/conversations", async (req, res) => {
     const convIds = (membership || []).map((m) => m.conversation_id);
     if (convIds.length === 0) return res.json([]);
 
-    // Fetch minimal conversation info
+    // Fetch minimal conversation info with community_id
     const { data: convs, error: cErr } = await supabase
       .from("conversations")
-      .select("id, type, title, created_by, created_at, updated_at")
+      .select("id, type, title, created_by, created_at, updated_at, community_id")
       .in("id", convIds);
     if (cErr) throw cErr;
 
@@ -351,13 +351,38 @@ router.get("/conversations", async (req, res) => {
       }
     }
 
+    // For community conversations, get community info
+    const communityConvs = (convs || []).filter((c) => c.type === "community" && c.community_id);
+    const communityInfo = new Map();
+    
+    if (communityConvs.length > 0) {
+      const communityIds = communityConvs.map(c => c.community_id);
+      
+      const { data: communities, error: comErr } = await supabase
+        .from("communities")
+        .select("id, name, image_url, cover_image")
+        .in("id", communityIds);
+      
+      if (!comErr && communities) {
+        communities.forEach(com => {
+          communityInfo.set(com.id, com);
+        });
+      }
+    }
+
     const enriched = (convs || [])
-      .map((c) => ({
-        ...c,
-        last_message: lastByConv.get(c.id) || null,
-        unread_count: unreadByConv.get(c.id) || 0,
-        other_participant: c.type === "dm" ? otherParticipants.get(c.id) || null : null,
-      }))
+      .map((c) => {
+        const communityData = c.type === "community" && c.community_id ? communityInfo.get(c.community_id) : null;
+        return {
+          ...c,
+          last_message: lastByConv.get(c.id) || null,
+          unread_count: unreadByConv.get(c.id) || 0,
+          other_participant: c.type === "dm" ? otherParticipants.get(c.id) || null : null,
+          // Add community info for community conversations
+          title: c.type === "community" && communityData ? communityData.name : c.title,
+          community_avatar: communityData ? (communityData.image_url || communityData.cover_image) : null,
+        };
+      })
       .sort((a, b) => {
         const ta = a.last_message ? new Date(a.last_message.created_at).getTime() : 0;
         const tb = b.last_message ? new Date(b.last_message.created_at).getTime() : 0;
