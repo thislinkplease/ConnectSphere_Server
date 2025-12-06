@@ -369,24 +369,58 @@ router.post("/:id/join", requireAuth, async (req, res) => {
     if (!requiresApproval) {
       await recomputeCommunityMemberCount(communityId);
 
-      // Auto-add member to community chat conversation
+      // IMPROVED: Ensure community conversation exists and auto-add member
       try {
-        // Get or create community conversation
-        const { data: conv, error: convErr } = await supabase
+        let conversationId;
+        
+        // Try to get existing conversation
+        const { data: existingConv, error: convFetchErr } = await supabase
           .from("conversations")
           .select("id")
           .eq("community_id", communityId)
-          .single();
+          .maybeSingle();
 
-        if (conv && conv.id) {
-          // Add member to conversation
-          await supabase
+        if (convFetchErr) {
+          console.error("Error fetching community conversation:", convFetchErr);
+        } else if (existingConv) {
+          conversationId = existingConv.id;
+          console.log(`Found existing conversation ${conversationId} for community ${communityId}`);
+        } else {
+          // Create conversation for this community
+          const { data: newConv, error: convErr } = await supabase
+            .from("conversations")
+            .insert([{
+              type: "community",
+              community_id: communityId,
+              created_by: username, // The first member creates it
+            }])
+            .select("id")
+            .maybeSingle();
+
+          if (convErr) {
+            console.error("Error creating community conversation:", convErr);
+          } else if (newConv) {
+            conversationId = newConv.id;
+            console.log(`Created community conversation ${conversationId} for community ${communityId}`);
+          } else {
+            console.error("Failed to create community conversation - no data returned");
+          }
+        }
+
+        // Add member to conversation_members
+        if (conversationId) {
+          const { error: memberAddErr } = await supabase
             .from("conversation_members")
             .upsert(
-              [{ conversation_id: conv.id, username }],
+              [{ conversation_id: conversationId, username }],
               { onConflict: "conversation_id,username" }
             );
-          console.log(`Auto-added ${username} to community ${communityId} chat`);
+          
+          if (memberAddErr) {
+            console.error("Error adding member to conversation:", memberAddErr);
+          } else {
+            console.log(`Auto-added ${username} to community ${communityId} conversation ${conversationId}`);
+          }
         }
       } catch (chatErr) {
         console.error("Error adding member to community chat:", chatErr);
@@ -537,21 +571,58 @@ router.post("/:id/join_requests/:username/approve", requireAuth, async (req, res
 
     await recomputeCommunityMemberCount(communityId);
 
-    // Auto-add to chat
+    // IMPROVED: Ensure community conversation exists and auto-add member
     try {
-      const { data: conv } = await supabase
+      let conversationId;
+      
+      // Try to get existing conversation
+      const { data: existingConv, error: convFetchErr } = await supabase
         .from("conversations")
         .select("id")
         .eq("community_id", communityId)
-        .single();
+        .maybeSingle();
 
-      if (conv && conv.id) {
-        await supabase
+      if (convFetchErr) {
+        console.error("Error fetching community conversation:", convFetchErr);
+      } else if (existingConv) {
+        conversationId = existingConv.id;
+        console.log(`Found existing conversation ${conversationId} for community ${communityId}`);
+      } else {
+        // Create conversation for this community
+        const { data: newConv, error: convErr } = await supabase
+          .from("conversations")
+          .insert([{
+            type: "community",
+            community_id: communityId,
+            created_by: actor, // The admin who approves creates it
+          }])
+          .select("id")
+          .maybeSingle();
+
+        if (convErr) {
+          console.error("Error creating community conversation:", convErr);
+        } else if (newConv) {
+          conversationId = newConv.id;
+          console.log(`Created community conversation ${conversationId} for community ${communityId}`);
+        } else {
+          console.error("Failed to create community conversation - no data returned");
+        }
+      }
+
+      // Add member to conversation_members
+      if (conversationId) {
+        const { error: memberAddErr } = await supabase
           .from("conversation_members")
           .upsert(
-            [{ conversation_id: conv.id, username: targetUsername }],
+            [{ conversation_id: conversationId, username: targetUsername }],
             { onConflict: "conversation_id,username" }
           );
+        
+        if (memberAddErr) {
+          console.error("Error adding approved member to conversation:", memberAddErr);
+        } else {
+          console.log(`Auto-added ${targetUsername} to community ${communityId} conversation ${conversationId}`);
+        }
       }
     } catch (e) {
       console.error("Error adding approved member to chat:", e);
@@ -1603,22 +1674,56 @@ router.post("/:id/join-requests/:requestId", async (req, res) => {
 
       await recomputeCommunityMemberCount(communityId);
 
-      // Auto-add member to community chat conversation
+      // IMPROVED: Ensure community conversation exists and auto-add member
       try {
-        const { data: conv, error: convErr } = await supabase
+        let conversationId;
+        
+        // Try to get existing conversation
+        const { data: existingConv, error: convFetchErr } = await supabase
           .from("conversations")
           .select("id")
           .eq("community_id", communityId)
-          .single();
+          .maybeSingle();
 
-        if (conv && conv.id) {
-          await supabase
+        if (convFetchErr) {
+          console.error("Error fetching community conversation:", convFetchErr);
+        } else if (existingConv) {
+          conversationId = existingConv.id;
+          console.log(`Found existing conversation ${conversationId} for community ${communityId}`);
+        } else {
+          // Create conversation for this community
+          const { data: newConv, error: convErr } = await supabase
+            .from("conversations")
+            .insert([{
+              type: "community",
+              community_id: communityId,
+              created_by: actor, // The admin who approves creates it
+            }])
+            .select("id")
+            .single();
+
+          if (convErr) {
+            console.error("Error creating community conversation:", convErr);
+          } else {
+            conversationId = newConv.id;
+            console.log(`Created community conversation ${conversationId} for community ${communityId}`);
+          }
+        }
+
+        // Add member to conversation_members
+        if (conversationId) {
+          const { error: memberAddErr } = await supabase
             .from("conversation_members")
             .upsert(
-              [{ conversation_id: conv.id, username: request.username }],
+              [{ conversation_id: conversationId, username: request.username }],
               { onConflict: "conversation_id,username" }
             );
-          console.log(`Auto-added ${request.username} to community ${communityId} chat (via join request approval)`);
+          
+          if (memberAddErr) {
+            console.error("Error adding member via join request to conversation:", memberAddErr);
+          } else {
+            console.log(`Auto-added ${request.username} to community ${communityId} conversation ${conversationId} (via join request approval)`);
+          }
         }
       } catch (chatErr) {
         console.error("Error adding member to community chat:", chatErr);

@@ -1,6 +1,6 @@
 ﻿# Connect Sphere — Backend (Server)
 
-The backend of Connect Sphere is built using Node.js, Express, and Supabase.
+The backend of Connect Sphere is built using Node.js, Express and Supabase.
 It serves as the core API layer handling authentication, user data, communities, posts, chat, events, hangouts, media uploads and real-time style interactions.
 
 The backend communicates with Supabase (PostgreSQL + Storage) and provides REST APIs for the mobile client.
@@ -38,8 +38,8 @@ The backend communicates with Supabase (PostgreSQL + Storage) and provides REST 
 
 **Clone the project**
 ```bash
-git clone https://github.com/your-repo/connect-sphere.git
-cd connect-sphere/backend
+git clone https://github.com/thislinkplease/ConnectSphere_Server.git
+cd .\ConnectSphere-Server\
 ```
 
 **Install dependencies**
