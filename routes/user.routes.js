@@ -268,22 +268,46 @@ router.put("/:id", async (req, res) => {
 /* ------------------------------- Search & Check ------------------------------ */
 
 /**
- * Search users by username or name (case-insensitive)
- * GET /users/search?q=keyword
+ * Search users by username or name (case-insensitive) with optional filters
+ * GET /users/search?q=keyword&gender=Male&min_age=18&max_age=30
  */
 router.get("/search", async (req, res) => {
   const q = (req.query.q || "").trim();
   if (!q) return res.json([]);
+  
+  const genderParam = req.query.gender;
+  const minAge = req.query.min_age ? Number(req.query.min_age) : null;
+  const maxAge = req.query.max_age ? Number(req.query.max_age) : null;
+  
+  // Validate gender parameter (only allow specific values)
+  const validGenders = ["Male", "Female", "Other"];
+  const gender = genderParam && validGenders.includes(genderParam) ? genderParam : null;
+  
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from("users")
-      .select("id, email, name, avatar, bio, username, is_following, is_follower")
+      .select("id, email, name, avatar, bio, username, country, city, status, gender, age, latitude, longitude, is_online, interests, is_following, is_follower")
       .or(`username.ilike.%${q}%,name.ilike.%${q}%`)
       .order("username", { ascending: true })
       .limit(30);
 
+    // Apply gender filter if provided
+    if (gender) {
+      query = query.eq("gender", gender);
+    }
+
+    // Apply age range filters if provided
+    if (minAge !== null) {
+      query = query.gte("age", minAge);
+    }
+
+    if (maxAge !== null) {
+      query = query.lte("age", maxAge);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
-    res.json(data);
+    res.json(data || []);
   } catch (err) {
     console.error("search users error:", err);
     res.status(500).json({ message: "Server error while searching users." });

@@ -250,11 +250,12 @@ router.get("/conversations", async (req, res) => {
     } catch (viewErr) {
       // Fallback: Calculate unread counts directly (optimized batch query)
       if (convIds.length > 0) {
-        // Get all messages for all conversations
+        // Get all messages for all conversations (excluding messages sent by viewer)
         const { data: allConvMsgs, error: allMsgErr } = await supabase
           .from("messages")
-          .select("id, conversation_id")
-          .in("conversation_id", convIds);
+          .select("id, conversation_id, sender_username")
+          .in("conversation_id", convIds)
+          .neq("sender_username", viewer);
         
         if (!allMsgErr && allConvMsgs) {
           const allMsgIds = allConvMsgs.map(m => m.id);

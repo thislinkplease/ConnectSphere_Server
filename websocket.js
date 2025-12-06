@@ -264,6 +264,82 @@ function initializeWebSocket(httpServer, allowedOrigins) {
       }
     });
 
+    // IMPROVED: Handle notification when user joins a community
+    // This ensures the community conversation exists and user is added to it
+    socket.on("notify_community_conversation", async ({ communityId, username }) => {
+      try {
+        console.log(`📢 User ${username} notified join for community ${communityId}`);
+        
+        // Get or create community conversation
+        let conversationId;
+        const { data: existingConv, error: convFetchErr } = await supabase
+          .from("conversations")
+          .select("id")
+          .eq("community_id", communityId)
+          .maybeSingle();
+
+        if (convFetchErr) {
+          console.error("Error fetching community conversation:", convFetchErr);
+          return;
+        }
+
+        if (existingConv) {
+          conversationId = existingConv.id;
+          console.log(`Found existing conversation ${conversationId} for community ${communityId}`);
+        } else {
+          // Create conversation for this community if it doesn't exist
+          const { data: newConv, error: convErr } = await supabase
+            .from("conversations")
+            .insert([{
+              type: "community",
+              community_id: communityId,
+              created_by: username,
+            }])
+            .select("id")
+            .maybeSingle();
+
+          if (convErr) {
+            console.error("Error creating community conversation:", convErr);
+            return;
+          }
+          if (!newConv) {
+            console.error("Failed to create community conversation - no data returned");
+            return;
+          }
+          conversationId = newConv.id;
+          console.log(`Created new conversation ${conversationId} for community ${communityId}`);
+        }
+
+        // Add user to conversation members if not already there
+        const { error: memberAddErr } = await supabase
+          .from("conversation_members")
+          .upsert(
+            [{ conversation_id: conversationId, username }],
+            { onConflict: "conversation_id,username" }
+          );
+
+        if (memberAddErr) {
+          console.error("Error adding user to conversation members:", memberAddErr);
+          return;
+        }
+
+        console.log(`Added ${username} to conversation ${conversationId} members`);
+
+        // Emit event back to the user to join the community chat
+        socket.emit("community_conversation_ready", {
+          communityId,
+          conversationId,
+        });
+
+        // Auto-join the room for them
+        const roomName = `community_chat_${communityId}`;
+        socket.join(roomName);
+        console.log(`✅ Auto-joined ${username} to community chat room ${roomName}`);
+      } catch (err) {
+        console.error("notify_community_conversation error:", err);
+      }
+    });
+
     // ==================== Community Chat Events ====================
 
     // Join a community chat room
@@ -319,11 +395,17 @@ function initializeWebSocket(httpServer, allowedOrigins) {
 
         // 2. Get or create community conversation
         let conversationId;
-        const { data: existingConv } = await supabase
+        const { data: existingConv, error: convFetchErr2 } = await supabase
           .from("conversations")
           .select("id")
           .eq("community_id", communityId)
-          .single();
+          .maybeSingle();
+
+        if (convFetchErr2) {
+          console.error("Error fetching community conversation:", convFetchErr2);
+          socket.emit("error", { message: "Failed to fetch community conversation" });
+          return;
+        }
 
         if (existingConv) {
           conversationId = existingConv.id;
@@ -337,10 +419,47 @@ function initializeWebSocket(httpServer, allowedOrigins) {
               created_by: senderUsername,
             }])
             .select("id")
-            .single();
+            .maybeSingle();
 
-          if (convErr) throw convErr;
+          if (convErr) {
+            console.error("Error creating community conversation:", convErr);
+            socket.emit("error", { message: "Failed to create community conversation" });
+            return;
+          }
+          if (!newConv) {
+            console.error("Failed to create community conversation - no data returned");
+            socket.emit("error", { message: "Failed to create community conversation" });
+            return;
+          }
           conversationId = newConv.id;
+
+          // IMPROVED: When creating a new conversation, add all approved members to conversation_members
+          const { data: allMembers, error: membersErr } = await supabase
+            .from("community_members")
+            .select("username")
+            .eq("community_id", communityId)
+            .eq("status", "approved");
+
+          if (membersErr) {
+            console.error("Error fetching community members:", membersErr);
+            // Continue anyway - not critical for message sending
+          } else if (allMembers && allMembers.length > 0) {
+            const memberEntries = allMembers.map(m => ({
+              conversation_id: conversationId,
+              username: m.username
+            }));
+            
+            const { error: upsertErr } = await supabase
+              .from("conversation_members")
+              .upsert(memberEntries, { onConflict: "conversation_id,username" });
+            
+            if (upsertErr) {
+              console.error("Error adding members to conversation:", upsertErr);
+              // Continue anyway - not critical for message sending
+            } else {
+              console.log(`Added ${allMembers.length} members to new community conversation ${conversationId}`);
+            }
+          }
         }
 
         // 3. Insert message
