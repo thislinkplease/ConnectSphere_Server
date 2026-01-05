@@ -158,17 +158,37 @@ router.post("/", requireAuth, async (req, res) => {
 
     await recomputeCommunityMemberCount(data.id);
 
-    // Create a conversation for community chat
+    // Create a conversation for community chat and add creator as member
     try {
-      await supabase
+      const { data: newConv, error: convErr } = await supabase
         .from("conversations")
         .insert([{
           type: "community",
           community_id: data.id,
           created_by: created_by,
-        }]);
-    } catch (convErr) {
-      console.error("Error creating community conversation:", convErr);
+        }])
+        .select("id")
+        .single();
+
+      if (convErr || !newConv) {
+        console.error("Error creating community conversation:", convErr || "No conversation returned");
+      } else {
+        // Add creator to conversation_members so it appears in their inbox immediately
+        const { error: memberAddErr } = await supabase
+          .from("conversation_members")
+          .upsert(
+            [{ conversation_id: newConv.id, username: created_by, role: "admin" }],
+            { onConflict: "conversation_id,username" }
+          );
+        
+        if (memberAddErr) {
+          console.error("Error adding creator to conversation_members:", memberAddErr);
+        } else {
+          console.log(`Creator ${created_by} added to community conversation ${newConv.id}`);
+        }
+      }
+    } catch (err) {
+      console.error("Error in community conversation setup:", err);
       // Don't fail the whole operation if conversation creation fails
     }
 
